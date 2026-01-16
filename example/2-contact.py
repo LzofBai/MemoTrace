@@ -9,11 +9,18 @@
 @Description : 
 """
 import time
-
+import json
+import os
+import sys
+from pathlib import Path
+# 添加项目根目录到Python路径，确保可以导入wxManager模块
+current_file_path = Path(__file__).resolve()
+project_root = current_file_path.parent.parent  # 回退到MemoTrace目录
+sys.path.insert(0, str(project_root))
 from wxManager import DatabaseConnection
 
-db_dir = ''  # 第一步解析后的数据库路径，例如：./wxid_xxxx/db_storage
-db_version = 4  # 数据库版本，4 or 3
+db_dir = 'J:\Github\MemoTrace_test\wxid_5e3hd0zrse6w22\Msg'  # 第一步解析后的数据库路径，例如：./wxid_xxxx/db_storage
+db_version = 3  # 数据库版本，4 or 3
 
 conn = DatabaseConnection(db_dir, db_version)  # 创建数据库连接
 database = conn.get_interface()  # 获取数据库接口

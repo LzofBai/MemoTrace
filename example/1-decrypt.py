@@ -11,6 +11,14 @@
 
 import json
 import os
+import sys
+from pathlib import Path
+
+# 添加项目根目录到Python路径，确保可以导入wxManager模块
+current_file_path = Path(__file__).resolve()
+project_root = current_file_path.parent.parent  # 回退到MemoTrace目录
+sys.path.insert(0, str(project_root))
+
 from multiprocessing import freeze_support
 
 from wxManager import Me
@@ -23,7 +31,8 @@ def dump_v3():
     """
     解析微信3.x版本的数据库
     """
-    version_list_path = '../wxManager/decrypt/version_list.json'
+    # 使用绝对路径来确保version_list.json文件能被找到
+    version_list_path = os.path.join(project_root, 'wxManager', 'decrypt', 'version_list.json')
     with open(version_list_path, "r", encoding="utf-8") as f:
         version_list = json.loads(f.read())
     r_3 = get_info_v3(version_list)  # 微信3.x
@@ -35,11 +44,14 @@ def dump_v3():
         me.name = wx_info.nick_name
         info_data = me.to_json()
         output_dir = wx_info.wxid
+        
         key = wx_info.key
         if not key:
             print('error! 未找到key，请重启微信后再试')
             continue
         wx_dir = wx_info.wx_dir
+        #解密数据库，此程序的核心功能，核心参数（KEY:数据库加密密钥，src_dir:微信数据目录，dest_dir:导出目录）
+        #密匙从已登陆的微信程序中获取，密匙与账号绑定，可考虑一次获取存储，下次启动时读取
         decrypt_v3.decrypt_db_files(key, src_dir=wx_dir, dest_dir=output_dir)
         # 导出的数据库在 output_dir/Msg 文件夹下，后面会用到
         with open(os.path.join(output_dir, 'Msg', 'info.json'), 'w', encoding='utf-8') as f:
@@ -70,7 +82,8 @@ def dump_v4():
         # 导出的数据库在 output_dir/db_storage 文件夹下，后面会用到
         with open(os.path.join(output_dir, 'db_storage', 'info.json'), 'w', encoding='utf-8') as f:
             json.dump(info_data, f, ensure_ascii=False, indent=4)
-        print(f'数据库解析成功，在{os.path.join(output_dir, "Msg")}路径下')
+        # 修复：打印正确的路径信息，对于v4版本是db_storage而非Msg
+        print(f'数据库解析成功，在{os.path.join(output_dir, "db_storage")}路径下')
 
 
 if __name__ == '__main__':

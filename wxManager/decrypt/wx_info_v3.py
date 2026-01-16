@@ -36,6 +36,18 @@ void_p = ctypes.c_void_p
 
 
 def get_exe_bit(file_path):
+    """
+    获取可执行文件的位数（32位或64位）
+
+    通过读取PE（Portable Executable）文件头信息来判断Windows可执行文件是32位还是64位。
+    函数会检查DOS头、PE签名以及Machine字段来确定架构类型。
+
+    Args:
+        file_path (str): 可执行文件的路径
+
+    Returns:
+        int: 返回可执行文件的位数，32表示32位，64表示64位或其他情况
+    """
     try:
         with open(file_path, 'rb') as f:
             dos_header = f.read(2)
@@ -63,19 +75,50 @@ def get_exe_bit(file_path):
 
 
 def get_info_without_key(h_process, address, n_size=64):
-    array = ctypes.create_string_buffer(n_size)
-    if ReadProcessMemory(h_process, void_p(address), array, n_size, 0) == 0: return "None"
-    array = bytes(array).split(b"\x00")[0] if b"\x00" in array else bytes(array)
-    text = array.decode('utf-8', errors='ignore')
-    return text.strip() if text.strip() != "" else "None"
+    """
+    从指定进程内存地址读取信息并转换为字符串
+    
+    该函数通过调用ReadProcessMemory从指定进程中读取数据，
+    将读取的数据转换为字符串格式并去除空字符和空白字符。
+    
+    Args:
+        h_process: 进程句柄，用于标识要读取的目标进程
+        address: 内存地址，表示要读取数据的起始位置
+        n_size: 要读取的字节数，默认为64字节
+    
+    Returns:
+        str: 成功时返回读取到的字符串内容（已去除空字符和首尾空白），
+             失败或无有效内容时返回"None"
+    """
+    array = ctypes.create_string_buffer(n_size)  # 创建一个指定大小的缓冲区来存储读取的数据
+    if ReadProcessMemory(h_process, void_p(address), array, n_size, 0) == 0: return "None"  # 尝试从目标进程内存中读取数据
+    array = bytes(array).split(b"\x00")[0] if b"\x00" in array else bytes(array)  # 分割字节数组以去除空终止符后的部分
+    text = array.decode('utf-8', errors='ignore')  # 将字节数组解码为UTF-8字符串
+    return text.strip() if text.strip() != "" else "None"  # 去除字符串首尾空白并返回结果
 
 
 def pattern_scan_all(handle, pattern, *, return_multiple=False, find_num=100):
+    """
+    在内存中扫描指定的字节模式，查找所有匹配项或第一个匹配项
+
+    参数:
+        handle: 进程句柄，用于访问目标进程内存
+        pattern (bytes): 要搜索的字节模式
+        return_multiple (bool, optional): 是否返回多个结果，默认为False
+        find_num (int, optional): 最大查找数量限制，默认为100
+
+    返回:
+        如果return_multiple为True，返回找到的所有地址列表；否则返回第一个找到的地址
+    """
+    # 初始化下一个要扫描的内存区域起始地址
     next_region = 0
+    # 存储找到的地址
     found = []
+    # 根据系统架构确定用户空间地址上限
     user_space_limit = 0x7FFFFFFF0000 if sys.maxsize > 2 ** 32 else 0x7fff0000
     while next_region < user_space_limit:
         try:
+            # 扫描单个内存页以查找模式
             next_region, page_found = pymem.pattern.scan_pattern_page(
                 handle,
                 next_region,
@@ -85,31 +128,60 @@ def pattern_scan_all(handle, pattern, *, return_multiple=False, find_num=100):
         except Exception as e:
             print(e)
             break
+        # 如果只需要返回单个结果且找到了匹配项，则直接返回
         if not return_multiple and page_found:
             return page_found
+        # 如果在当前页面找到匹配项，将其添加到结果列表
         if page_found:
             found += page_found
+        # 检查是否已找到足够的匹配项
         if len(found) > find_num:
             break
     return found
 
 
 def get_info_wxid(h_process):
+    """
+    从微信进程内存中获取微信号ID
+    
+    参数:
+        h_process: 进程句柄，用于读取目标进程的内存
+    
+    返回值:
+        str: 微信号ID，如果无法获取则返回"None"
+    """
+    # 设置查找数量限制
     find_num = 100
+    # 在进程中扫描包含'\\Msg\\FTSContact'模式的所有地址
     addrs = pattern_scan_all(h_process, br'\\Msg\\FTSContact', return_multiple=True, find_num=find_num)
     wxids = []
     for addr in addrs:
+        # 创建一个80字节的缓冲区来存储读取的数据
         array = ctypes.create_string_buffer(80)
+        # 从进程内存中读取数据到缓冲区
         if ReadProcessMemory(h_process, void_p(addr - 30), array, 80, 0) == 0: return "None"
         array = bytes(array)  # .split(b"\\")[0]
+        # 提取微信号部分，先截断到"\Msg"位置
         array = array.split(b"\\Msg")[0]
+        # 获取最后一个反斜杠后的部分（即微信号）
         array = array.split(b"\\")[-1]
+        # 将字节数组转换为字符串并添加到列表
         wxids.append(array.decode('utf-8', errors='ignore'))
+    # 使用出现次数最多的微信号作为结果
     wxid = max(wxids, key=wxids.count) if wxids else "None"
     return wxid
 
 
 def get_wx_dir(wxid):
+    """
+    根据微信号获取微信文件存储目录路径
+
+    参数:
+        wxid (str): 微信号ID
+
+    返回值:
+        str: 微信文件存储目录路径，如果无法获取则返回空字符串
+    """
     if not wxid:
         return ''
     try:
@@ -159,7 +231,29 @@ def get_wx_dir(wxid):
 
 
 def get_key(db_path, addr_len):
+    """
+    从微信进程中获取数据库解密密钥
+
+    参数:
+        db_path (str): 微信数据库路径
+        addr_len (int): 地址长度（字节）
+
+    返回值:
+        str: 32字节密钥的十六进制字符串表示，如果获取失败则返回空字符串
+    """
+    
     def read_key_bytes(h_process, address, address_len=8):
+        """
+        从指定内存地址读取密钥字节
+        
+        参数:
+            h_process: 进程句柄
+            address: 内存地址
+            address_len: 要读取的地址长度，默认为8字节
+            
+        返回:
+            bytes: 读取到的密钥字节，失败则返回空字符串
+        """
         array = ctypes.create_string_buffer(address_len)
         if ReadProcessMemory(h_process, void_p(address), array, address_len, 0) == 0: return ""
         address = int.from_bytes(array, byteorder='little')  # 逆序转换为int地址（key地址）
@@ -169,6 +263,16 @@ def get_key(db_path, addr_len):
         return key_bytes
 
     def verify_key(key, wx_db_path):
+        """
+        验证密钥是否正确
+        
+        参数:
+            key (bytes): 待验证的密钥
+            wx_db_path (str): 微信数据库路径
+            
+        返回:
+            bool: 密钥是否正确
+        """
         if not wx_db_path:
             return True
         KEY_SIZE = 32
@@ -217,6 +321,16 @@ def get_key(db_path, addr_len):
 
 
 def dump_wechat_info_v3(version_list, pid) -> WeChatInfo:
+    """
+    从微信 v3.x 进程中提取完整的账户信息
+
+    参数:
+        version_list (dict): 包含不同微信版本偏移地址的字典
+        pid (int): 微信进程ID
+
+    返回:
+        WeChatInfo: 包含微信账户信息的对象
+    """
     wechat_info = WeChatInfo()
     wechat_info.pid = pid
     wechat_info.version = get_version(pid)

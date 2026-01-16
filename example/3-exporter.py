@@ -11,17 +11,28 @@
 
 import time
 from multiprocessing import freeze_support
+import time
+import json
+import os
+import sys
+from pathlib import Path
+# 添加项目根目录到Python路径，确保可以导入wxManager模块
+current_file_path = Path(__file__).resolve()
+project_root = current_file_path.parent.parent  # 回退到MemoTrace目录
+sys.path.insert(0, str(project_root))
 
 from exporter.config import FileType
-from exporter import HtmlExporter, TxtExporter, AiTxtExporter, DocxExporter, MarkdownExporter, ExcelExporter
+# 仅导入不需要额外依赖的导出器
+from exporter import HtmlExporter, TxtExporter, AiTxtExporter, MarkdownExporter, ExcelExporter
+# from exporter import DocxExporter  # 需要python-docx库才启用
 from wxManager import DatabaseConnection, MessageType
 
 
 def export():
     st = time.time()
 
-    db_dir = ''  # 解析后的数据库路径，例如：./db_storage
-    db_version = 4  # 数据库版本，4 or 3
+    db_dir = 'J:\Github\MemoTrace_test\wxid_5e3hd0zrse6w22\Msg'  # 解析后的数据库路径，例如：./db_storage
+    db_version = 3  # 数据库版本，4 or 3
 
     wxid = 'wxid_00112233'  # 要导出好友的wxid
     output_dir = './data/'  # 输出文件夹
