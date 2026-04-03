@@ -13,7 +13,6 @@ python 1-decrypt.py
 后面其他操作都会用到这个文件夹
 
 ## 2、查看联系人
-
 修改 `2-contact.py` 文件的 `db_dir` 为上面得到的文件夹，如果微信是4.0 `db_version` 设置为4，否则设置为3
 
 ```shell
