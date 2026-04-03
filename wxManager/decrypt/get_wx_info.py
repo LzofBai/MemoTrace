@@ -57,9 +57,37 @@ def get_exe_bit(file_path):
 def get_info_without_key(h_process, address, n_size=64):
     array = ctypes.create_string_buffer(n_size)
     if ReadProcessMemory(h_process, void_p(address), array, n_size, 0) == 0: return "None"
-    array = bytes(array).split(b"\x00")[0] if b"\x00" in array else bytes(array)
+    
+    raw_bytes = bytes(array)
+    
+    # 尝试作为UTF-16LE解码（宽字符）
+    try:
+        # 检查是否包含UTF-16LE特征（交替的0x00）
+        if b'\x00\x00' not in raw_bytes[:4] and raw_bytes[1:2] == b'\x00':
+            text = raw_bytes.decode('utf-16le', errors='ignore').split('\x00')[0]
+            if text.strip():
+                return text.strip()
+    except:
+        pass
+    
+    # 回退到UTF-8解码
+    array = raw_bytes.split(b"\x00")[0] if b"\x00" in raw_bytes else raw_bytes
     text = array.decode('utf-8', errors='ignore')
     return text.strip() if text.strip() != "" else "None"
+
+
+def get_info_without_key_wide(h_process, address, n_size=128):
+    """专门用于读取宽字符(UTF-16LE)字符串"""
+    array = ctypes.create_string_buffer(n_size)
+    if ReadProcessMemory(h_process, void_p(address), array, n_size, 0) == 0: return "None"
+    
+    raw_bytes = bytes(array)
+    try:
+        # 按UTF-16LE解码
+        text = raw_bytes.decode('utf-16le', errors='ignore').split('\x00')[0]
+        return text.strip() if text.strip() != "" else "None"
+    except:
+        return "None"
 
 
 def pattern_scan_all(handle, pattern, *, return_multiple=False, find_num=100):
@@ -248,6 +276,7 @@ def read_info(version_list):
             Handle = ctypes.windll.kernel32.OpenProcess(0x1F0FFF, False, process.pid)
 
             bias_list = version_list.get(tmp_rd['version'])
+            print(f"[DEBUG] 微信版本: {tmp_rd['version']}, 偏移列表: {bias_list}")
             if not isinstance(bias_list, list) or len(bias_list) <= 4:
                 default_res['version'] = tmp_rd['version']
                 default_res['errcode'] = 405
@@ -260,10 +289,26 @@ def read_info(version_list):
                 mail_base_address = wechat_base_address + bias_list[3]
                 # key_base_address = wechat_base_address + bias_list[4]
 
-                tmp_rd['account'] = get_info_without_key(Handle, account__base_address, 32) if bias_list[1] != 0 else "None"
+                print(f"[DEBUG] WeChatWin.dll基址: 0x{wechat_base_address:x}")
+                print(f"[DEBUG] name地址: 0x{name_base_address:x}, 偏移: {bias_list[0]}")
+                print(f"[DEBUG] account地址: 0x{account__base_address:x}, 偏移: {bias_list[1]}")
+                print(f"[DEBUG] mobile地址: 0x{mobile_base_address:x}, 偏移: {bias_list[2]}")
+
+                # 优先使用宽字符读取（微信新版本使用UTF-16LE）
+                tmp_rd['name'] = get_info_without_key_wide(Handle, name_base_address, 128) if bias_list[0] != 0 else "None"
+                tmp_rd['account'] = get_info_without_key_wide(Handle, account__base_address, 64) if bias_list[1] != 0 else "None"
                 tmp_rd['mobile'] = get_info_without_key(Handle, mobile_base_address, 64) if bias_list[2] != 0 else "None"
-                tmp_rd['name'] = get_info_without_key(Handle, name_base_address, 64) if bias_list[0] != 0 else "None"
-                tmp_rd['mail'] = get_info_without_key(Handle, mail_base_address, 64) if bias_list[3] != 0 else "None"
+                tmp_rd['mail'] = get_info_without_key_wide(Handle, mail_base_address, 128) if bias_list[3] != 0 else "None"
+                
+                # 如果宽字符读取失败，回退到普通读取
+                if tmp_rd['name'] == "None":
+                    tmp_rd['name'] = get_info_without_key(Handle, name_base_address, 64) if bias_list[0] != 0 else "None"
+                if tmp_rd['account'] == "None":
+                    tmp_rd['account'] = get_info_without_key(Handle, account__base_address, 32) if bias_list[1] != 0 else "None"
+                if tmp_rd['mail'] == "None":
+                    tmp_rd['mail'] = get_info_without_key(Handle, mail_base_address, 64) if bias_list[3] != 0 else "None"
+
+                print(f"[DEBUG] 读取结果: name={tmp_rd['name']}, mobile={tmp_rd['mobile']}, account={tmp_rd['account']}")
 
             addrLen = get_exe_bit(process.exe()) // 8
 

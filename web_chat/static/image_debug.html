@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MemoTrace 图片诊断工具</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: #f5f5f5;
+            padding: 20px;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        h1 {
+            color: #333;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #07c160;
+        }
+        .panel {
+            background: #fff;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+        .panel h2 {
+            color: #07c160;
+            margin-bottom: 15px;
+            font-size: 18px;
+        }
+        .btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            margin-right: 10px;
+            margin-bottom: 10px;
+        }
+        .btn-primary {
+            background: #07c160;
+            color: white;
+        }
+        .btn-secondary {
+            background: #e0e0e0;
+            color: #333;
+        }
+        .input-group {
+            margin-bottom: 15px;
+        }
+        .input-group label {
+            display: block;
+            margin-bottom: 5px;
+            color: #666;
+        }
+        .input-group input, .input-group textarea {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+        .log-container {
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 15px;
+            border-radius: 4px;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 12px;
+            max-height: 300px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            word-break: break-all;
+            margin-top: 10px;
+        }
+        .image-preview {
+            max-width: 300px;
+            max-height: 300px;
+            border: 2px solid #ddd;
+            border-radius: 4px;
+            margin: 10px 0;
+            padding: 10px;
+            text-align: center;
+        }
+        .image-preview img {
+            max-width: 100%;
+            max-height: 280px;
+        }
+        .image-info {
+            background: #f5f5f5;
+            padding: 10px;
+            border-radius: 4px;
+            margin-top: 10px;
+            font-family: monospace;
+            font-size: 12px;
+        }
+        .status-ok { color: #07c160; }
+        .status-error { color: #fa5151; }
+        .status-warn { color: #faad14; }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 10px;
+        }
+        th, td {
+            text-align: left;
+            padding: 10px;
+            border-bottom: 1px solid #eee;
+        }
+        th {
+            background: #f5f5f5;
+            font-weight: 600;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🖼️ MemoTrace 图片诊断工具</h1>
+        
+        <!-- 快速测试 -->
+        <div class="panel">
+            <h2>快速图片测试</h2>
+            <div class="input-group">
+                <label>图片路径（从聊天记录中获取的 path 值）</label>
+                <input type="text" id="image-path" placeholder="例如: Image/2025-01/xxx.dat 或绝对路径">
+            </div>
+            <button class="btn btn-primary" onclick="testImage()">🔍 测试图片加载</button>
+            <button class="btn btn-secondary" onclick="clearTest()">🗑️ 清空</button>
+            
+            <div id="test-result" style="margin-top: 15px;"></div>
+        </div>
+        
+        <!-- 从聊天记录诊断 -->
+        <div class="panel">
+            <h2>从聊天记录诊断图片</h2>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+                <div class="input-group">
+                    <label>选择联系人</label>
+                    <select id="contact-select" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px;">
+                        <option value="">-- 加载中... --</option>
+                    </select>
+                </div>
+                <div class="input-group">
+                    <label>消息数量</label>
+                    <input type="number" id="msg-limit" value="10" min="1" max="50" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px;">
+                </div>
+            </div>
+            <button class="btn btn-primary" onclick="loadMessagesWithImages()">📋 加载消息并分析图片</button>
+            
+            <div id="message-analysis" style="margin-top: 15px;"></div>
+        </div>
+        
+        <!-- 日志 -->
+        <div class="panel">
+            <h2>诊断日志</h2>
+            <div class="log-container" id="log-container">等待操作...</div>
+            <button class="btn btn-secondary" onclick="clearLogs()" style="margin-top: 10px;">🗑️ 清空日志</button>
+        </div>
+        
+        <!-- 常见问题 -->
+        <div class="panel">
+            <h2>❓ 图片加载常见问题</h2>
+            <div style="line-height: 1.8; color: #666;">
+                <h3 style="margin-top: 15px; color: #333;">1. 图片路径为空或不存在</h3>
+                <p>检查后端日志中 <code>[API] /api/messages 图片消息</code> 是否包含 path 字段。</p>
+                
+                <h3 style="margin-top: 15px; color: #333;">2. 图片路径正确但无法解密</h3>
+                <p>检查后端日志中 <code>[IMAGE]</code> 相关的解密日志，确认：</p>
+                <ul style="margin-left: 20px;">
+                    <li>V3 图片：是否正确计算 XOR 解密码</li>
+                    <li>V4 图片：是否正确获取 AES 密钥</li>
+                </ul>
+                
+                <h3 style="margin-top: 15px; color: #333;">3. 图片路径是相对路径</h3>
+                <p>后端会自动尝试以下路径查找：</p>
+                <ul style="margin-left: 20px;">
+                    <li>数据库目录 (DB_DIR)</li>
+                    <li>微信数据目录（DB_DIR 上级）</li>
+                    <li>项目根目录</li>
+                </ul>
+                
+                <h3 style="margin-top: 15px; color: #333;">4. 如何获取图片路径</h3>
+                <p>在浏览器控制台执行：</p>
+                <pre style="background: #f5f5f5; padding: 10px; border-radius: 4px; overflow-x: auto;">// 查看最近加载的消息
+Logger.getLogs().filter(l => l.message.includes('图片'))</pre>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = '';
+        let logs = [];
+        
+        function log(level, message, data) {
+            const time = new Date().toLocaleTimeString();
+            const entry = `[${time}] [${level}] ${message}${data ? ' | ' + JSON.stringify(data) : ''}`;
+            logs.push(entry);
+            document.getElementById('log-container').textContent = logs.join('\n');
+            document.getElementById('log-container').scrollTop = document.getElementById('log-container').scrollHeight;
+        }
+        
+        function clearLogs() {
+            logs = [];
+            document.getElementById('log-container').textContent = '等待操作...';
+        }
+        
+        // 测试单张图片
+        async function testImage() {
+            const path = document.getElementById('image-path').value.trim();
+            if (!path) {
+                alert('请输入图片路径');
+                return;
+            }
+            
+            log('INFO', '开始测试图片', { path });
+            
+            const container = document.getElementById('test-result');
+            const imageUrl = `${API_BASE}/api/image?path=${encodeURIComponent(path)}`;
+            
+            container.innerHTML = `
+                <div style="margin-top: 10px;">
+                    <p>请求 URL: <code>${imageUrl}</code></p>
+                    <div class="image-preview">
+                        <div id="loading-text">加载中...</div>
+                        <img id="test-img" style="display: none;" 
+                             onload="onImageLoad()" 
+                             onerror="onImageError()">
+                    </div>
+                    <div id="image-status"></div>
+                </div>
+            `;
+            
+            // 设置图片源
+            document.getElementById('test-img').src = imageUrl;
+            
+            // 同时发送 fetch 请求获取详细信息
+            try {
+                const response = await fetch(imageUrl);
+                log('INFO', '图片请求响应', { 
+                    status: response.status, 
+                    contentType: response.headers.get('content-type'),
+                    contentLength: response.headers.get('content-length')
+                });
+            } catch (e) {
+                log('ERROR', '图片请求失败', { error: e.message });
+            }
+        }
+        
+        function onImageLoad() {
+            const img = document.getElementById('test-img');
+            document.getElementById('loading-text').style.display = 'none';
+            img.style.display = 'block';
+            document.getElementById('image-status').innerHTML = `
+                <div class="image-info">
+                    <span class="status-ok">✅ 图片加载成功</span><br>
+                    尺寸: ${img.naturalWidth} x ${img.naturalHeight}<br>
+                    URL: ${img.src.substring(0, 100)}...
+                </div>
+            `;
+            log('INFO', '图片加载成功', { width: img.naturalWidth, height: img.naturalHeight });
+        }
+        
+        function onImageError() {
+            document.getElementById('loading-text').style.display = 'none';
+            document.getElementById('image-status').innerHTML = `
+                <div class="image-info">
+                    <span class="status-error">❌ 图片加载失败</span><br>
+                    请检查后端日志中的 [IMAGE] 相关日志<br>
+                    可能原因：路径不存在、解密失败、文件损坏
+                </div>
+            `;
+            log('ERROR', '图片加载失败');
+        }
+        
+        function clearTest() {
+            document.getElementById('test-result').innerHTML = '';
+            document.getElementById('image-path').value = '';
+        }
+        
+        // 加载联系人列表
+        async function loadContacts() {
+            try {
+                const response = await fetch(`${API_BASE}/api/contacts?page_size=100`);
+                const result = await response.json();
+                
+                if (result.code === 0) {
+                    const select = document.getElementById('contact-select');
+                    select.innerHTML = '<option value="">-- 请选择 --</option>' + 
+                        result.data.map(c => `<option value="${c.wxid}">${c.remark || c.nickname} (${c.wxid})</option>`).join('');
+                    log('INFO', '联系人列表加载完成', { count: result.data.length });
+                }
+            } catch (e) {
+                log('ERROR', '加载联系人失败', { error: e.message });
+            }
+        }
+        
+        // 加载消息并分析图片
+        async function loadMessagesWithImages() {
+            const wxid = document.getElementById('contact-select').value;
+            const limit = parseInt(document.getElementById('msg-limit').value);
+            
+            if (!wxid) {
+                alert('请选择联系人');
+                return;
+            }
+            
+            log('INFO', '开始加载消息', { wxid, limit });
+            
+            try {
+                const response = await fetch(`${API_BASE}/api/messages?wxid=${encodeURIComponent(wxid)}&page_size=${limit}`);
+                const result = await response.json();
+                
+                if (result.code === 0) {
+                    const messages = result.data;
+                    const imageMessages = messages.filter(m => m.type === 3);
+                    
+                    log('INFO', '消息加载完成', { total: messages.length, images: imageMessages.length });
+                    
+                    const container = document.getElementById('message-analysis');
+                    
+                    if (imageMessages.length === 0) {
+                        container.innerHTML = '<div class="status-warn">⚠️ 未找到图片消息</div>';
+                        return;
+                    }
+                    
+                    container.innerHTML = `
+                        <p>共找到 ${imageMessages.length} 张图片消息：</p>
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>序号</th>
+                                    <th>时间</th>
+                                    <th>发送者</th>
+                                    <th>图片路径</th>
+                                    <th>操作</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${imageMessages.map((msg, idx) => `
+                                    <tr>
+                                        <td>${idx + 1}</td>
+                                        <td>${msg.str_time}</td>
+                                        <td>${msg.display_name}</td>
+                                        <td><code>${msg.file_path || '无路径'}</code></td>
+                                        <td>
+                                            <button class="btn btn-secondary" onclick="testImagePath('${msg.file_path || ''}')" 
+                                                ${!msg.file_path ? 'disabled' : ''}>测试</button>
+                                        </td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                        <div id="image-test-area" style="margin-top: 15px;"></div>
+                    `;
+                } else {
+                    log('ERROR', '加载消息失败', { msg: result.msg });
+                }
+            } catch (e) {
+                log('ERROR', '加载消息异常', { error: e.message });
+            }
+        }
+        
+        function testImagePath(path) {
+            document.getElementById('image-path').value = path;
+            testImage();
+            window.scrollTo(0, 0);
+        }
+        
+        // 页面加载时获取联系人
+        loadContacts();
+    </script>
+</body>
+</html>

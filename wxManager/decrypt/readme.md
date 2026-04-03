@@ -1,4 +1,4 @@
-我将为您介绍 [decrypt](file:///Users/xuxiaoxiao/Documents/GitHub/MemoTrace/MemoTrace/wxManager/decrypt/__init__.py#L1-L61) 目录下的各个模块及其用途和设计意图。
+我将为您介绍 [decrypt]目录下的各个模块及其用途和设计意图。
 
 ## 微信解密模块介绍
 

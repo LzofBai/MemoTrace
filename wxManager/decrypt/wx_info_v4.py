@@ -394,9 +394,10 @@ def get_wx_dir(process_handle):
 def get_nickname(pid):
     process_handle = open_process(pid)
     if not process_handle:
-        print(f"无法打开进程 {pid}")
+        print(f"[V4 DEBUG] 无法打开进程 {pid}")
         return {}
     process_infos = get_memory_regions(process_handle)
+    print(f"[V4 DEBUG] 内存区域数量: {len(process_infos)}")
     # 加载规则
     r'''$a = /(.{16}[\x00-\x20]\x00{7}(\x0f|\x1f)\x00{7}){2}.{16}[\x01-\x20]\x00{7}(\x0f|\x1f)\x00{7}[0-9]{11}\x00{5}\x0b\x00{7}\x0f\x00{7}.{25}\x00{7}(\x3f|\x2f|\x1f|\x0f)\x00{7}/s'''
     rules_v4_phone = r'''
@@ -411,6 +412,7 @@ def get_nickname(pid):
     phone = ''
     account_name = ''
     rules = yara.compile(source=rules_v4_phone)
+    match_count = 0
     for base_address, region_size in process_infos:
         memory = read_process_memory(process_handle, base_address, region_size)
         # 定义目标数据（如内存或文件内容）
@@ -423,6 +425,7 @@ def get_nickname(pid):
         #     continue
         matches = rules.match(data=target_data)
         if matches:
+            match_count += 1
             # 输出匹配结果
             for match in matches:
                 rule_name = match.rule
@@ -436,19 +439,32 @@ def get_nickname(pid):
                         # 提取前 8 个字节
                         data_slice = target_data[offset:offset + 8]
                         # 使用 struct.unpack() 将字节转换为 u64，'<Q' 表示小端字节序的 8 字节无符号整数
-                        nick_name_length = struct.unpack('<Q', data_slice)[0]
+                        try:
+                            nick_name_length = struct.unpack('<Q', data_slice)[0]
+                        except:
+                            nick_name_length = 0
                         # print('nick_name_length', nick_name_length)
-                        nick_name = read_string(target_data, phone_addr - 0x20, nick_name_length)
+                        if 0 < nick_name_length < 100:  # 合理的昵称长度
+                            nick_name = read_string(target_data, phone_addr - 0x20, nick_name_length)
                         a = target_data[phone_addr - 0x60:phone_addr + 0x50]
-                        account_name_length = read_num(target_data, phone_addr - 0x30, 8)
+                        try:
+                            account_name_length = read_num(target_data, phone_addr - 0x30, 8)
+                        except:
+                            account_name_length = 0
                         # print('account_name_length', account_name_length)
-                        account_name = read_string(target_data, phone_addr - 0x40, account_name_length)
+                        if 0 < account_name_length < 100:  # 合理的账号长度
+                            account_name = read_string(target_data, phone_addr - 0x40, account_name_length)
                         # with open('a.bin', 'wb') as f:
                         #     f.write(target_data)
-                        if not account_name:
-                            addr = read_num(target_data, phone_addr - 0x40, 8)
-                            # print(hex(addr))
-                            account_name = read_string_from_pid(pid, addr, account_name_length)
+                        if not account_name and 0 < account_name_length < 100:
+                            try:
+                                addr = read_num(target_data, phone_addr - 0x40, 8)
+                                # print(hex(addr))
+                                account_name = read_string_from_pid(pid, addr, account_name_length)
+                            except:
+                                pass
+    print(f"[V4 DEBUG] 匹配次数: {match_count}, nick_name={nick_name}, phone={phone}, account_name={account_name}")
+    ctypes.windll.kernel32.CloseHandle(process_handle)
     return {
         'nick_name': nick_name,
         'phone': phone,
