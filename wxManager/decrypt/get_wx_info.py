@@ -54,15 +54,51 @@ def get_exe_bit(file_path):
 
 
 # 读取内存中的字符串(非key部分)
+def read_ptr(h_process, address, addr_len=8):
+    """读取指针地址"""
+    array = ctypes.create_string_buffer(addr_len)
+    if ReadProcessMemory(h_process, void_p(address), array, addr_len, 0) == 0:
+        return None
+    ptr_bytes = bytes(array)
+    return int.from_bytes(ptr_bytes, byteorder='little')
+
+
 def get_info_without_key(h_process, address, n_size=64):
+    """
+    读取内存中的字符串
+    微信3.9.12+版本存储的是指针，需要先读取指针再读取字符串
+    """
+    # 首先尝试将address作为指针读取
+    ptr = read_ptr(h_process, address)
+    if ptr:
+        # 从指针指向的地址读取字符串
+        array = ctypes.create_string_buffer(n_size)
+        if ReadProcessMemory(h_process, void_p(ptr), array, n_size, 0) != 0:
+            raw_bytes = bytes(array)
+            # 尝试UTF-16LE解码
+            try:
+                text = raw_bytes.decode('utf-16le', errors='ignore').split('\x00')[0]
+                if text.strip():
+                    return text.strip()
+            except:
+                pass
+            # 尝试UTF-8解码
+            try:
+                text = raw_bytes.split(b"\x00")[0].decode('utf-8', errors='ignore')
+                if text.strip():
+                    return text.strip()
+            except:
+                pass
+    
+    # 如果指针读取失败，直接读取address处的数据（兼容旧版本）
     array = ctypes.create_string_buffer(n_size)
-    if ReadProcessMemory(h_process, void_p(address), array, n_size, 0) == 0: return "None"
+    if ReadProcessMemory(h_process, void_p(address), array, n_size, 0) == 0:
+        return "None"
     
     raw_bytes = bytes(array)
     
     # 尝试作为UTF-16LE解码（宽字符）
     try:
-        # 检查是否包含UTF-16LE特征（交替的0x00）
         if b'\x00\x00' not in raw_bytes[:4] and raw_bytes[1:2] == b'\x00':
             text = raw_bytes.decode('utf-16le', errors='ignore').split('\x00')[0]
             if text.strip():
@@ -78,14 +114,27 @@ def get_info_without_key(h_process, address, n_size=64):
 
 def get_info_without_key_wide(h_process, address, n_size=128):
     """专门用于读取宽字符(UTF-16LE)字符串"""
+    # 首先尝试作为指针读取
+    ptr = read_ptr(h_process, address)
+    if ptr:
+        array = ctypes.create_string_buffer(n_size)
+        if ReadProcessMemory(h_process, void_p(ptr), array, n_size, 0) != 0:
+            raw_bytes = bytes(array)
+            try:
+                text = raw_bytes.decode('utf-16le', errors='ignore').split('\x00')[0]
+                return text.strip() if text.strip() else "None"
+            except:
+                pass
+    
+    # 直接读取
     array = ctypes.create_string_buffer(n_size)
-    if ReadProcessMemory(h_process, void_p(address), array, n_size, 0) == 0: return "None"
+    if ReadProcessMemory(h_process, void_p(address), array, n_size, 0) == 0:
+        return "None"
     
     raw_bytes = bytes(array)
     try:
-        # 按UTF-16LE解码
         text = raw_bytes.decode('utf-16le', errors='ignore').split('\x00')[0]
-        return text.strip() if text.strip() != "" else "None"
+        return text.strip() if text.strip() else "None"
     except:
         return "None"
 

@@ -142,9 +142,44 @@ def scan_all_memory(h_process, target):
     return results
 
 
+def test_offset(Handle, wechat_base, name_offset, account_offset, mobile_offset):
+    """测试一组偏移量是否正确"""
+    name_addr = wechat_base + name_offset
+    account_addr = wechat_base + account_offset
+    mobile_addr = wechat_base + mobile_offset
+    
+    # 读取数据
+    name_data = read_memory(Handle, name_addr, 128)
+    account_data = read_memory(Handle, account_addr, 64)
+    mobile_data = read_memory(Handle, mobile_addr, 64)
+    
+    if not name_data or not account_data or not mobile_data:
+        return None
+    
+    # 尝试解码
+    results = {}
+    
+    # 昵称 - 尝试UTF-16LE和UTF-8
+    name_utf16 = decode_utf16le(name_data)
+    name_utf8 = decode_utf8(name_data)
+    results['name'] = name_utf16 if name_utf16 else name_utf8
+    
+    # 账号
+    account_utf16 = decode_utf16le(account_data)
+    account_utf8 = decode_utf8(account_data)
+    results['account'] = account_utf16 if account_utf16 else account_utf8
+    
+    # 手机号
+    mobile_utf16 = decode_utf16le(mobile_data)
+    mobile_utf8 = decode_utf8(mobile_data)
+    results['mobile'] = mobile_utf16 if mobile_utf16 else mobile_utf8
+    
+    return results
+
+
 def find_offsets():
     """查找偏移量"""
-    print(f"[*] 开始查找微信 {TARGET_VERSION} 的偏移量")
+    print(f"[*] 开始验证微信 {TARGET_VERSION} 的偏移量")
     print(f"[*] 目标手机号: {TARGET_PHONE}")
     print(f"[*] 目标昵称: {TARGET_NICKNAME}")
     
@@ -187,64 +222,68 @@ def find_offsets():
     # 打开进程
     Handle = ctypes.windll.kernel32.OpenProcess(0x1F0FFF, False, wechat_pid)
     
-    # 扫描内存查找手机号 - 全内存扫描
-    print(f"\n[*] 全内存扫描查找手机号: {TARGET_PHONE}")
-    phone_addrs = scan_all_memory(Handle, TARGET_PHONE)
+    # 测试已知的偏移量组合
+    test_offsets = [
+        # 基于 3.9.12.51
+        {'name': 94555176, 'account': 94556512, 'mobile': 94554984, 'desc': '3.9.12.51 基准'},
+        # 附近偏移量
+        {'name': 94555176, 'account': 94556512, 'mobile': 94554984 + 8, 'desc': 'mobile +8'},
+        {'name': 94555176, 'account': 94556512, 'mobile': 94554984 - 8, 'desc': 'mobile -8'},
+        {'name': 94555176 + 8, 'account': 94556512 + 8, 'mobile': 94554984 + 8, 'desc': '全部 +8'},
+        {'name': 94555176 - 8, 'account': 94556512 - 8, 'mobile': 94554984 - 8, 'desc': '全部 -8'},
+        # 更大范围
+        {'name': 94555176 + 16, 'account': 94556512 + 16, 'mobile': 94554984 + 16, 'desc': '全部 +16'},
+        {'name': 94555176 + 24, 'account': 94556512 + 24, 'mobile': 94554984 + 24, 'desc': '全部 +24'},
+        {'name': 94555176 + 32, 'account': 94556512 + 32, 'mobile': 94554984 + 32, 'desc': '全部 +32'},
+    ]
     
-    print(f"[+] 找到 {len(phone_addrs)} 个手机号地址:")
-    for addr, enc, base in phone_addrs[:10]:
-        if wechat_base:
-            offset = addr - wechat_base
-            print(f"    0x{addr:x} (偏移: {offset}, 编码: {enc})")
-        else:
-            print(f"    0x{addr:x} (编码: {enc})")
+    print("\n[*] 测试已知偏移量组合:")
+    best_match = None
+    best_score = 0
     
-    # 扫描昵称
-    print(f"\n[*] 全内存扫描查找昵称: {TARGET_NICKNAME}")
-    nickname_addrs = scan_all_memory(Handle, TARGET_NICKNAME)
-    
-    print(f"[+] 找到 {len(nickname_addrs)} 个昵称地址:")
-    for addr, enc, base in nickname_addrs[:10]:
-        if wechat_base:
-            offset = addr - wechat_base
-            print(f"    0x{addr:x} (偏移: {offset}, 编码: {enc})")
-        else:
-            print(f"    0x{addr:x} (编码: {enc})")
-    
-    # 分析可能的偏移量
-    print("\n[*] 分析可能的偏移量组合:")
-    
-    # 已知的参考偏移（从version_list.json）
-    ref_offsets = {
-        '3.9.12.51': {'name': 94555176, 'account': 94556512, 'mobile': 94554984},
-        '3.9.12.45': {'name': 94503784, 'account': 94505120, 'mobile': 94503592},
-    }
-    
-    if version in ref_offsets:
-        ref = ref_offsets[version]
-        print(f"\n[*] 参考版本 {version} 的偏移量:")
-        print(f"    name: {ref['name']}")
-        print(f"    account: {ref['account']}")
-        print(f"    mobile: {ref['mobile']}")
-    
-    # 尝试从找到的地址推断偏移量
-    if phone_addrs and nickname_addrs:
-        print("\n[*] 从扫描结果推断的偏移量:")
-        for phone_addr in phone_addrs[:3]:
-            phone_offset = phone_addr - wechat_base
-            for nick_addr in nickname_addrs[:3]:
-                nick_offset = nick_addr - wechat_base
-                print(f"    昵称偏移: {nick_offset}, 手机号偏移: {phone_offset}")
+    for offset in test_offsets:
+        results = test_offset(Handle, wechat_base, offset['name'], offset['account'], offset['mobile'])
+        if results:
+            score = 0
+            if results['name'] == TARGET_NICKNAME:
+                score += 2
+            elif results['name'] and len(results['name']) > 0:
+                score += 1
+                
+            if results['mobile'] == TARGET_PHONE:
+                score += 2
+            elif results['mobile'] and len(str(results['mobile'])) == 11:
+                score += 1
+            
+            status = ""
+            if results['name'] == TARGET_NICKNAME:
+                status += "[昵称OK]"
+            if results['mobile'] == TARGET_PHONE:
+                status += "[手机号OK]"
+            
+            print(f"\n  {offset['desc']}:")
+            print(f"    name={results['name']}, mobile={results['mobile']}, account={results['account']} {status}")
+            
+            if score > best_score:
+                best_score = score
+                best_match = {'offset': offset, 'results': results}
     
     ctypes.windll.kernel32.CloseHandle(Handle)
     
-    # 建议的偏移量
+    # 输出最佳匹配
     print("\n" + "="*60)
-    print("[*] 建议的偏移量（基于 3.9.12.51 推断）:")
-    print("    版本 3.9.12.55 与 3.9.12.51 接近，使用相同偏移量:")
-    print("    name: 94555176")
-    print("    account: 94556512")
-    print("    mobile: 94554984")
+    if best_match and best_score >= 2:
+        print("[*] 最佳匹配偏移量:")
+        print(f"    name: {best_match['offset']['name']}")
+        print(f"    account: {best_match['offset']['account']}")
+        print(f"    mobile: {best_match['offset']['mobile']}")
+        print(f"\n[*] 读取结果:")
+        print(f"    昵称: {best_match['results']['name']}")
+        print(f"    账号: {best_match['results']['account']}")
+        print(f"    手机号: {best_match['results']['mobile']}")
+    else:
+        print("[-] 未找到匹配的偏移量")
+        print("[*] 当前版本 3.9.12.55 可能需要新的偏移量")
     print("="*60)
 
 
