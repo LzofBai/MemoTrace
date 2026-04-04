@@ -8,96 +8,149 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 </head>
 <body>
-    <!-- 登录/解析数据界面 -->
-    <div id="login-modal" class="login-modal" style="display: flex;">
-        <div class="login-modal-content">
-            <div class="login-header">
-                <h2><i class="fas fa-file-import"></i> 解析数据</h2>
-                <p>以下内容为自动获取，如获取失败请手动填写</p>
-            </div>
-            
-            <div class="login-form">
-                <!-- 版本选择 -->
-                <div class="form-row">
-                    <label>版本</label>
-                    <div class="form-input-group">
-                        <select id="wx-version" class="form-select">
-                            <option value="3">微信 3.x</option>
-                            <option value="4">微信 4.x</option>
-                        </select>
-                        <button id="btn-get-info" class="btn btn-primary btn-small" onclick="fetchWechatInfo()">
-                            <i class="fas fa-fingerprint"></i> 获取信息
+    <!-- 顶部导航栏（登录后显示） -->
+    <nav class="top-nav" id="top-nav">
+        <div class="nav-brand">MemoTrace</div>
+        <div class="nav-tabs">
+            <button class="nav-tab active" data-page="chat" onclick="switchPage('chat')">
+                <i class="fas fa-comment"></i>
+                <span>聊天</span>
+            </button>
+            <button class="nav-tab" data-page="contacts" onclick="switchPage('contacts')">
+                <i class="fas fa-address-book"></i>
+                <span>好友</span>
+            </button>
+            <button class="nav-tab" data-page="settings" onclick="switchPage('settings')">
+                <i class="fas fa-cog"></i>
+                <span>设置</span>
+            </button>
+        </div>
+        <div class="nav-user" id="nav-user">
+            <span id="nav-username">未登录</span>
+        </div>
+    </nav>
+
+    <!-- 登录页面 -->
+    <div class="page active" id="page-login">
+        <div class="login-container">
+            <div class="login-modal-content">
+                <div class="login-header">
+                    <h2><i class="fas fa-file-import"></i> 解析数据</h2>
+                    <p>以下内容为自动获取，如获取失败请手动填写</p>
+                </div>
+                
+                <div class="login-form">
+                    <!-- 版本选择 -->
+                    <div class="form-row">
+                        <label>版本</label>
+                        <div class="form-input-group">
+                            <select id="wx-version" class="form-select">
+                                <option value="3">微信 3.x</option>
+                                <option value="4">微信 4.x</option>
+                            </select>
+                            <button id="btn-get-info" class="btn btn-primary btn-small" onclick="fetchWechatInfo()">
+                                <i class="fas fa-fingerprint"></i> 获取信息
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <!-- 手机号 -->
+                    <div class="form-row">
+                        <label>手机号</label>
+                        <input type="text" id="wx-mobile" class="form-input" placeholder="自动获取或手动填写">
+                    </div>
+                    
+                    <!-- 昵称 -->
+                    <div class="form-row">
+                        <label>昵称</label>
+                        <input type="text" id="wx-name" class="form-input" placeholder="自动获取或手动填写">
+                    </div>
+                    
+                    <!-- wxid -->
+                    <div class="form-row">
+                        <label>wxid</label>
+                        <input type="text" id="wx-wxid" class="form-input" placeholder="自动获取或手动填写">
+                    </div>
+                    
+                    <!-- Key -->
+                    <div class="form-row">
+                        <label>Key</label>
+                        <div class="form-input-group">
+                            <input type="password" id="wx-key" class="form-input key-input" placeholder="自动获取或手动填写" readonly>
+                            <button class="btn btn-secondary btn-small" onclick="toggleKeyVisibility()">
+                                <i class="fas fa-eye" id="key-toggle-icon"></i>
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <!-- 微信路径 -->
+                    <div class="form-row">
+                        <label>微信路径</label>
+                        <div class="form-input-group">
+                            <input type="text" id="wx-path" class="form-input" placeholder="选择微信数据文件夹" readonly>
+                            <button class="btn btn-secondary btn-small" onclick="selectWechatPath()">
+                                <i class="fas fa-folder-open"></i> 设置微信路径
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <!-- 解密数据库位置 -->
+                    <div class="form-row">
+                        <label>解密数据库位置</label>
+                        <div class="form-input-group">
+                            <input type="text" id="login-db-path" class="form-input" placeholder="选择解密后的数据库文件夹" readonly>
+                            <button class="btn btn-secondary btn-small" onclick="selectLoginDbPath()">
+                                <i class="fas fa-database"></i> 浏览
+                            </button>
+                        </div>
+                        <span class="form-hint">选择包含解密后数据库的文件夹（包含Msg文件夹的路径），或设置新的输出目录</span>
+                    </div>
+                    
+                    <!-- 输出目录（用于存放解密后的数据库） -->
+                    <div class="form-row">
+                        <label>输出目录</label>
+                        <div class="form-input-group">
+                            <input type="text" id="login-output-dir" class="form-input" placeholder="设置解密后的数据库输出目录" readonly>
+                            <button class="btn btn-secondary btn-small" onclick="selectLoginOutputDir()">
+                                <i class="fas fa-folder-plus"></i> 设置输出目录
+                            </button>
+                        </div>
+                        <span class="form-hint">解密后的数据库将保存到此目录（默认使用微信路径）</span>
+                    </div>
+                    
+                    <!-- 操作按钮 -->
+                    <div class="form-actions">
+                        <button id="btn-parse" class="btn btn-primary" onclick="parseData()" disabled>
+                            <i class="fas fa-play"></i> 解析数据
+                        </button>
+                        <button id="btn-incremental" class="btn btn-secondary" onclick="parseIncremental()" disabled>
+                            <i class="fas fa-sync"></i> 增量解析
+                        </button>
+                        <button id="btn-skip-login" class="btn btn-success" onclick="skipLoginIfDbExists()" style="display: none;" disabled>
+                            <i class="fas fa-sign-in-alt"></i> 直接进入
                         </button>
                     </div>
-                </div>
-                
-                <!-- 手机号 -->
-                <div class="form-row">
-                    <label>手机号</label>
-                    <input type="text" id="wx-mobile" class="form-input" placeholder="自动获取或手动填写">
-                </div>
-                
-                <!-- 昵称 -->
-                <div class="form-row">
-                    <label>昵称</label>
-                    <input type="text" id="wx-name" class="form-input" placeholder="自动获取或手动填写">
-                </div>
-                
-                <!-- wxid -->
-                <div class="form-row">
-                    <label>wxid</label>
-                    <input type="text" id="wx-wxid" class="form-input" placeholder="自动获取或手动填写">
-                </div>
-                
-                <!-- Key（新增） -->
-                <div class="form-row">
-                    <label>Key</label>
-                    <div class="form-input-group">
-                        <input type="text" id="wx-key" class="form-input key-input" placeholder="自动获取或手动填写" readonly>
-                        <button class="btn btn-secondary btn-small" onclick="toggleKeyVisibility()">
-                            <i class="fas fa-eye" id="key-toggle-icon"></i>
-                        </button>
+                    
+                    <!-- 状态显示 -->
+                    <div class="form-status">
+                        <span id="parse-status" class="status-text">未就绪</span>
+                        <span id="parse-progress" class="progress-text">0%</span>
                     </div>
-                </div>
-                
-                <!-- 微信路径 -->
-                <div class="form-row">
-                    <label>微信路径</label>
-                    <div class="form-input-group">
-                        <input type="text" id="wx-path" class="form-input" placeholder="选择微信数据文件夹" readonly>
-                        <button class="btn btn-secondary btn-small" onclick="selectWechatPath()">
-                            <i class="fas fa-folder-open"></i> 设置微信路径
-                        </button>
+                    
+                    <!-- 进度条 -->
+                    <div class="progress-bar">
+                        <div id="progress-fill" class="progress-fill" style="width: 0%"></div>
                     </div>
-                </div>
-                
-                <!-- 操作按钮 -->
-                <div class="form-actions">
-                    <button id="btn-parse" class="btn btn-primary" onclick="parseData()" disabled>
-                        <i class="fas fa-play"></i> 解析数据
-                    </button>
-                    <button id="btn-incremental" class="btn btn-secondary" onclick="parseIncremental()" disabled>
-                        <i class="fas fa-sync"></i> 增量解析
-                    </button>
-                </div>
-                
-                <!-- 状态显示 -->
-                <div class="form-status">
-                    <span id="parse-status" class="status-text">未就绪</span>
-                    <span id="parse-progress" class="progress-text">0%</span>
-                </div>
-                
-                <!-- 进度条 -->
-                <div class="progress-bar">
-                    <div id="progress-fill" class="progress-fill" style="width: 0%"></div>
                 </div>
             </div>
         </div>
     </div>
 
-    <div class="app-container">
-        <!-- 左侧边栏 -->
-        <div class="sidebar">
+    <!-- 聊天页面 -->
+    <div class="page" id="page-chat">
+        <div class="app-container">
+            <!-- 左侧边栏 -->
+            <div class="sidebar">
             <!-- 用户信息 -->
             <div class="user-profile">
                 <img src="https://via.placeholder.com/40" alt="头像" class="avatar" id="user-avatar">
@@ -190,6 +243,75 @@
             </div>
         </div>
     </div>
+
+    <!-- 联系人页面 -->
+    <div class="page" id="page-contacts">
+        <div class="contacts-page">
+            <div class="contacts-header">
+                <h2><i class="fas fa-address-book"></i> 联系人</h2>
+                <div class="contacts-stats" id="contacts-stats"></div>
+            </div>
+            <div class="contacts-content">
+                <div class="contact-list-page" id="contact-list-page">
+                    <!-- 动态生成 -->
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 设置页面 -->
+    <div class="page" id="page-settings">
+        <div class="settings-page">
+            <div class="settings-header">
+                <h2><i class="fas fa-cog"></i> 设置</h2>
+            </div>
+            <div class="settings-content">
+                <div class="settings-section">
+                    <h3><i class="fas fa-folder"></i> 路径设置</h3>
+                    <div class="setting-item">
+                        <label for="setting-wechat-path">微信聊天记录存放位置</label>
+                        <div class="path-input-group">
+                            <input type="text" id="setting-wechat-path" class="form-input" readonly placeholder="点击浏览选择路径">
+                            <button class="btn btn-secondary" onclick="selectSettingWechatPath()">
+                                <i class="fas fa-folder-open"></i> 浏览
+                            </button>
+                        </div>
+                        <span class="setting-hint">选择包含微信聊天记录的文件夹路径</span>
+                    </div>
+                    <div class="setting-item">
+                        <label for="setting-db-path">解密后数据库存放位置</label>
+                        <div class="path-input-group">
+                            <input type="text" id="setting-db-path" class="form-input" readonly placeholder="点击浏览选择路径">
+                            <button class="btn btn-secondary" onclick="selectSettingDbPath()">
+                                <i class="fas fa-folder-open"></i> 浏览
+                            </button>
+                        </div>
+                        <span class="setting-hint">解密后的数据库文件存放路径</span>
+                    </div>
+                </div>
+                <div class="settings-section">
+                    <h3><i class="fas fa-code"></i> 数据库版本</h3>
+                    <div class="setting-item">
+                        <label for="setting-db-version">微信版本</label>
+                        <select id="setting-db-version" class="form-select">
+                            <option value="3">微信 3.x 版本</option>
+                            <option value="4">微信 4.x 版本</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="settings-actions">
+                    <button class="btn btn-primary" onclick="saveSettings()">
+                        <i class="fas fa-save"></i> 保存设置
+                    </button>
+                    <button class="btn btn-secondary" onclick="loadSettings()">
+                        <i class="fas fa-sync"></i> 重置
+                    </button>
+                </div>
+                <div class="settings-status" id="settings-status"></div>
+            </div>
+        </div>
+    </div>
+    <!-- 设置页面结束 -->
     
     <!-- 群成员侧边栏（点击群聊时显示） -->
     <div class="member-sidebar" id="member-sidebar" style="display: none;">

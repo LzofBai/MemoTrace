@@ -8,9 +8,11 @@
 import os
 import sys
 import ctypes
+import json
 import psutil
 import pymem
 from win32com.client import Dispatch
+from pathlib import Path
 
 # 已知正确信息
 TARGET_PHONE = "18206740264"
@@ -221,70 +223,129 @@ def find_offsets():
     
     # 打开进程
     Handle = ctypes.windll.kernel32.OpenProcess(0x1F0FFF, False, wechat_pid)
+    pm = pymem.Pymem("WeChat.exe")
     
-    # 测试已知的偏移量组合
-    test_offsets = [
-        # 基于 3.9.12.51
-        {'name': 94555176, 'account': 94556512, 'mobile': 94554984, 'desc': '3.9.12.51 基准'},
-        # 附近偏移量
-        {'name': 94555176, 'account': 94556512, 'mobile': 94554984 + 8, 'desc': 'mobile +8'},
-        {'name': 94555176, 'account': 94556512, 'mobile': 94554984 - 8, 'desc': 'mobile -8'},
-        {'name': 94555176 + 8, 'account': 94556512 + 8, 'mobile': 94554984 + 8, 'desc': '全部 +8'},
-        {'name': 94555176 - 8, 'account': 94556512 - 8, 'mobile': 94554984 - 8, 'desc': '全部 -8'},
-        # 更大范围
-        {'name': 94555176 + 16, 'account': 94556512 + 16, 'mobile': 94554984 + 16, 'desc': '全部 +16'},
-        {'name': 94555176 + 24, 'account': 94556512 + 24, 'mobile': 94554984 + 24, 'desc': '全部 +24'},
-        {'name': 94555176 + 32, 'account': 94556512 + 32, 'mobile': 94554984 + 32, 'desc': '全部 +32'},
-    ]
+    print("\n[*] 步骤1: 在内存中搜索手机号...")
+    phone_addrs = pm.pattern_scan_all(TARGET_PHONE.encode('utf-16le'), return_multiple=True)
+    print(f"[+] 找到 {len(phone_addrs)} 个手机号地址")
     
-    print("\n[*] 测试已知偏移量组合:")
-    best_match = None
-    best_score = 0
+    if not phone_addrs:
+        print("[-] 未找到手机号")
+        return
     
-    for offset in test_offsets:
-        results = test_offset(Handle, wechat_base, offset['name'], offset['account'], offset['mobile'])
-        if results:
-            score = 0
-            if results['name'] == TARGET_NICKNAME:
-                score += 2
-            elif results['name'] and len(results['name']) > 0:
-                score += 1
-                
-            if results['mobile'] == TARGET_PHONE:
-                score += 2
-            elif results['mobile'] and len(str(results['mobile'])) == 11:
-                score += 1
+    phone_data_addr = phone_addrs[0]
+    print(f"    第一个地址: 0x{phone_data_addr:x}")
+    
+    print("\n[*] 步骤2: 在内存中搜索昵称...")
+    name_addrs = pm.pattern_scan_all(TARGET_NICKNAME.encode('utf-16le'), return_multiple=True)
+    print(f"[+] 找到 {len(name_addrs)} 个昵称地址")
+    
+    if not name_addrs:
+        print("[-] 未找到昵称")
+        return
+    
+    name_data_addr = name_addrs[0]
+    print(f"    第一个地址: 0x{name_data_addr:x}")
+    
+    print("\n[*] 步骤3: 在 WeChatWin.dll 中搜索指向手机号的指针...")
+    # 在整个 DLL 范围内搜索（约 100MB）
+    dll_size = 200 * 1024 * 1024  # 200MB
+    
+    mobile_pointer_offset = None
+    name_pointer_offset = None
+    
+    # 分块搜索，每次 1MB
+    chunk_size = 1024 * 1024
+    for chunk_start in range(0, min(dll_size, 150*1024*1024), chunk_size):
+        chunk_end = min(chunk_start + chunk_size, dll_size)
+        
+        for offset in range(chunk_start, chunk_end, 8):
+            addr = wechat_base + offset
             
-            status = ""
-            if results['name'] == TARGET_NICKNAME:
-                status += "[昵称OK]"
-            if results['mobile'] == TARGET_PHONE:
-                status += "[手机号OK]"
+            ptr_buf = ctypes.create_string_buffer(8)
+            if ReadProcessMemory(Handle, void_p(addr), ptr_buf, 8, 0) == 0:
+                continue
             
-            print(f"\n  {offset['desc']}:")
-            print(f"    name={results['name']}, mobile={results['mobile']}, account={results['account']} {status}")
+            ptr = int.from_bytes(bytes(ptr_buf), byteorder='little')
             
-            if score > best_score:
-                best_score = score
-                best_match = {'offset': offset, 'results': results}
+            # 检查是否指向手机号
+            if ptr == phone_data_addr and mobile_pointer_offset is None:
+                mobile_pointer_offset = offset
+                print(f"[+] 找到手机号指针! 偏移: {offset}, 地址: 0x{addr:x}")
+            
+            # 检查是否指向昵称
+            if ptr == name_data_addr and name_pointer_offset is None:
+                name_pointer_offset = offset
+                print(f"[+] 找到昵称指针! 偏移: {offset}, 地址: 0x{addr:x}")
+            
+            # 如果都找到了，退出
+            if mobile_pointer_offset and name_pointer_offset:
+                break
+        
+        if mobile_pointer_offset and name_pointer_offset:
+            break
+        
+        # 每 10MB 显示进度
+        if chunk_start % (10*1024*1024) == 0:
+            print(f"    进度: {chunk_start // (1024*1024)}MB...")
     
     ctypes.windll.kernel32.CloseHandle(Handle)
     
-    # 输出最佳匹配
-    print("\n" + "="*60)
-    if best_match and best_score >= 2:
-        print("[*] 最佳匹配偏移量:")
-        print(f"    name: {best_match['offset']['name']}")
-        print(f"    account: {best_match['offset']['account']}")
-        print(f"    mobile: {best_match['offset']['mobile']}")
-        print(f"\n[*] 读取结果:")
-        print(f"    昵称: {best_match['results']['name']}")
-        print(f"    账号: {best_match['results']['account']}")
-        print(f"    手机号: {best_match['results']['mobile']}")
+    print("\n" + "="*70)
+    if mobile_pointer_offset and name_pointer_offset:
+        print("✅ 成功找到偏移量!")
+        print("="*70)
+        print(f"\n建议配置:")
+        print(f"[")
+        print(f"  {name_pointer_offset},      // name (昵称)")
+        print(f"  {name_pointer_offset},      // account (账号)")
+        print(f"  {mobile_pointer_offset},    // mobile (手机号)")
+        print(f"  0,                          // mail")
+        print(f"  0                           // key")
+        print(f"]")
+        
+        config = {
+            TARGET_VERSION: [
+                name_pointer_offset,
+                name_pointer_offset,
+                mobile_pointer_offset,
+                0,
+                0
+            ]
+        }
+        
+        print(f"\nJSON 格式:")
+        print(json.dumps(config, indent=4))
+        
+        update = input("\n是否更新 version_list.json? (y/n): ").strip().lower()
+        if update == 'y':
+            import json as json_module
+            version_list_path = Path(__file__).parent / 'version_list.json'
+            with open(version_list_path, 'r', encoding='utf-8') as f:
+                version_list = json_module.load(f)
+
+            # 保留已有的 key 偏移量（如果存在），避免被 0 覆盖
+            existing = version_list.get(TARGET_VERSION)
+            if existing and isinstance(existing, list) and len(existing) > 4 and existing[4] != 0:
+                config[TARGET_VERSION][4] = existing[4]
+                print(f"[INFO] 保留已有的 key 偏移量: {existing[4]}")
+            else:
+                print("[WARN] key 偏移量为 0，如需使用 key 偏移读取，请手动填入或从相近版本继承")
+
+            version_list[TARGET_VERSION] = config[TARGET_VERSION]
+
+            with open(version_list_path, 'w', encoding='utf-8') as f:
+                json_module.dump(version_list, f, indent=4, ensure_ascii=False)
+
+            print("✅ 已更新 version_list.json")
+            print("请重启 app.py 测试")
     else:
-        print("[-] 未找到匹配的偏移量")
-        print("[*] 当前版本 3.9.12.55 可能需要新的偏移量")
-    print("="*60)
+        print("❌ 未找到完整的偏移量")
+        if mobile_pointer_offset:
+            print(f"   找到手机号指针: {mobile_pointer_offset}")
+        if name_pointer_offset:
+            print(f"   找到昵称指针: {name_pointer_offset}")
+    print("="*70)
 
 
 if __name__ == '__main__':

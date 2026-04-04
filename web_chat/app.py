@@ -48,6 +48,7 @@ try:
     from wxManager import DatabaseConnection
     from wxManager.decrypt.decrypt_dat import decode_dat, is_v4_image, get_aes_key
     from wxManager import Me
+    from wxManager.decrypt import decrypt_v3, decrypt_v4
     logger.info("✅ 所有模块导入成功")
 except Exception as e:
     logger.error(f"❌ 模块导入失败: {e}")
@@ -68,7 +69,7 @@ try:
         VERSION_LIST = {}
         logger.warning(f"[INIT] 版本列表文件不存在: {version_list_path}")
     
-    from wxManager.decrypt.get_wx_info import get_info_v3, get_info_v4
+    from wxManager.decrypt import get_info_v3, get_info_v4
     logger.info("✅ 微信信息获取模块导入成功")
 except Exception as e:
     logger.warning(f"⚠️ 微信信息获取模块导入失败: {e}")
@@ -97,6 +98,40 @@ except Exception as e:
 # 请根据实际情况修改以下配置
 DB_DIR = r'J:\Github\MemoTrace_test\wxid_5e3hd0zrse6w22\Msg'  # 解密后的数据库路径
 DB_VERSION = 3  # 数据库版本: 3 或 4
+
+# 配置文件路径
+CONFIG_FILE = BASE_DIR / 'config.json'
+
+def load_config():
+    """加载配置文件"""
+    if CONFIG_FILE.exists():
+        try:
+            with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception as e:
+            logger.warning(f'加载配置文件失败: {e}')
+    return {
+        'wechat_path': '',
+        'db_path': DB_DIR,
+        'db_version': DB_VERSION
+    }
+
+def save_config(config):
+    """保存配置文件"""
+    try:
+        with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+            json.dump(config, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception as e:
+        logger.error(f'保存配置文件失败: {e}')
+        return False
+
+# 启动时加载配置
+initial_config = load_config()
+if initial_config.get('db_path'):
+    DB_DIR = initial_config['db_path']
+if initial_config.get('db_version'):
+    DB_VERSION = initial_config['db_version']
 
 logger.info(f"数据库配置: DB_DIR={DB_DIR}, DB_VERSION={DB_VERSION}")
 
@@ -135,7 +170,9 @@ def init_database():
     except Exception as e:
         logger.error(f"[DB] ❌ 数据库连接失败: {e}")
         logger.error(traceback.format_exc())
-        raise
+        # 不抛出异常，返回 None，让调用者处理
+        database = None
+        return None
 
 
 # ==================== 辅助函数 ====================
@@ -287,6 +324,62 @@ def index():
     return send_from_directory(str(STATIC_DIR), 'index.html')
 
 
+@app.route('/api/config', methods=['GET'])
+def get_config():
+    """获取配置"""
+    logger.info("[API] GET /api/config - 获取配置")
+    config = load_config()
+    return jsonify({
+        'code': 0,
+        'data': {
+            'wechat_path': config.get('wechat_path', ''),
+            'db_path': config.get('db_path', DB_DIR),
+            'db_version': config.get('db_version', DB_VERSION)
+        }
+    })
+
+
+@app.route('/api/config', methods=['POST'])
+def update_config():
+    """更新配置"""
+    global DB_DIR, DB_VERSION, database
+    logger.info("[API] POST /api/config - 更新配置")
+    
+    try:
+        config = request.json
+        logger.info(f"[API] 收到的配置: {config}")
+        
+        # 保存配置
+        if save_config(config):
+            # 更新全局变量
+            new_db_path = config.get('db_path', DB_DIR)
+            new_db_version = config.get('db_version', DB_VERSION)
+            
+            # 如果数据库路径或版本变化，需要重置数据库连接
+            if new_db_path != DB_DIR or new_db_version != DB_VERSION:
+                DB_DIR = new_db_path
+                DB_VERSION = new_db_version
+                database = None  # 重置数据库连接，下次使用时重新初始化
+                logger.info(f"[API] 数据库配置已更新: DB_DIR={DB_DIR}, DB_VERSION={DB_VERSION}")
+            
+            return jsonify({
+                'code': 0,
+                'msg': '配置已保存'
+            })
+        else:
+            return jsonify({
+                'code': -1,
+                'msg': '保存配置失败'
+            })
+    except Exception as e:
+        logger.error(f"[API] ❌ 更新配置失败: {e}")
+        logger.error(traceback.format_exc())
+        return jsonify({
+            'code': -1,
+            'msg': f'更新配置失败: {str(e)}'
+        })
+
+
 @app.route('/api/test')
 def test():
     """测试数据库连接"""
@@ -316,6 +409,136 @@ def test():
             'code': -1,
             'msg': f'连接失败: {str(e)}',
             'data': None
+        })
+
+
+@app.route('/api/decrypt', methods=['POST'])
+def decrypt_wechat_db():
+    """
+    解密微信数据库
+    参数:
+        key: 解密密钥
+        wx_dir: 微信数据目录
+        output_dir: 输出目录
+        version: 版本 (3 或 4)
+    """
+    logger.info("[API] POST /api/decrypt - 解密数据库")
+    
+    try:
+        data = request.json
+        key = data.get('key', '')
+        wx_dir = data.get('wx_dir', '')
+        output_dir = data.get('output_dir', '')
+        version = int(data.get('version', 3))
+        
+        if not key or not wx_dir or not output_dir:
+            return jsonify({
+                'code': -1,
+                'msg': '缺少必要参数: key, wx_dir, output_dir'
+            })
+        
+        if not os.path.exists(wx_dir):
+            return jsonify({
+                'code': -1,
+                'msg': f'微信目录不存在: {wx_dir}'
+            })
+        
+        # 创建输出目录
+        os.makedirs(output_dir, exist_ok=True)
+        
+        logger.info(f"[API] 开始解密: version={version}, wx_dir={wx_dir}, output_dir={output_dir}")
+        
+        # 根据版本选择解密函数
+        if version == 4:
+            from wxManager.decrypt.decrypt_dat import get_decode_code_v4
+            decrypt_v4.decrypt_db_files(key, src_dir=wx_dir, dest_dir=output_dir)
+            db_subdir = 'db_storage'
+        else:
+            decrypt_v3.decrypt_db_files(key, src_dir=wx_dir, dest_dir=output_dir)
+            db_subdir = 'Msg'
+        
+        # 检查解密结果
+        decrypted_db_path = os.path.join(output_dir, db_subdir)
+        if os.path.exists(decrypted_db_path):
+            # 保存配置
+            save_config({
+                'wechat_path': wx_dir,
+                'db_path': decrypted_db_path,
+                'db_version': version
+            })
+            
+            # 重置数据库连接
+            global DB_DIR, DB_VERSION, database
+            DB_DIR = decrypted_db_path
+            DB_VERSION = version
+            database = None
+            
+            logger.info(f"[API] 解密成功: {decrypted_db_path}")
+            return jsonify({
+                'code': 0,
+                'msg': '解密成功',
+                'data': {
+                    'db_path': decrypted_db_path,
+                    'version': version
+                }
+            })
+        else:
+            return jsonify({
+                'code': -1,
+                'msg': '解密失败，未找到输出文件'
+            })
+            
+    except Exception as e:
+        logger.error(f"[API] 解密失败: {e}")
+        logger.error(traceback.format_exc())
+        return jsonify({
+            'code': -1,
+            'msg': f'解密失败: {str(e)}'
+        })
+
+
+@app.route('/api/db/check')
+def check_database():
+    """检查数据库是否存在且有效"""
+    logger.info("[API] GET /api/db/check - 检查数据库")
+    
+    try:
+        # 尝试初始化数据库
+        db = init_database()
+        
+        # 如果数据库初始化失败，返回不存在
+        if db is None:
+            logger.warning(f"[API] /api/db/check 数据库未初始化")
+            return jsonify({
+                'code': -1,
+                'msg': '数据库未初始化',
+                'data': {
+                    'exists': False,
+                    'db_dir': DB_DIR
+                }
+            })
+        
+        contacts = db.get_contacts()
+        
+        return jsonify({
+            'code': 0,
+            'msg': '数据库有效',
+            'data': {
+                'exists': True,
+                'contacts_count': len(contacts),
+                'db_dir': DB_DIR,
+                'db_version': DB_VERSION
+            }
+        })
+    except Exception as e:
+        logger.warning(f"[API] /api/db/check 数据库无效: {e}")
+        return jsonify({
+            'code': -1,
+            'msg': f'数据库无效: {str(e)}',
+            'data': {
+                'exists': False,
+                'db_dir': DB_DIR
+            }
         })
 
 
@@ -799,24 +1022,24 @@ def get_wechat_info():
             try:
                 logger.info("[API] 尝试获取V3微信信息...")
                 v3_info = get_info_v3(VERSION_LIST)
-                logger.info(f"[API] V3原始返回: {v3_info}")
+                logger.info(f"[API] V3原始返回数量: {len(v3_info) if v3_info else 0}")
                 if v3_info:
                     for info in v3_info:
-                        logger.info(f"[API] V3处理账号: errcode={info.get('errcode')}, name={info.get('name')}, mobile={info.get('mobile')}")
-                        if info.get('errcode') == 200:
+                        logger.info(f"[API] V3处理账号: errcode={info.errcode}, name={info.nick_name}, mobile={info.phone}")
+                        if info.errcode == 200:
                             result.append({
-                                'version': info.get('version', ''),
-                                'wxid': info.get('wxid', ''),
-                                'name': info.get('name', ''),
-                                'account': info.get('account', ''),
-                                'mobile': info.get('mobile', ''),
-                                'key': info.get('key', ''),  # 包含解密密钥
-                                'wx_dir': info.get('wx_dir', ''),
+                                'version': info.version,
+                                'wxid': info.wxid,
+                                'name': info.nick_name,
+                                'account': info.account_name,
+                                'mobile': info.phone,
+                                'key': info.key,  # 包含解密密钥
+                                'wx_dir': info.wx_dir,
                                 'type': 'v3'
                             })
-                            logger.info(f"[API] 获取到V3微信信息: name={info.get('name')}, mobile={info.get('mobile')}, wxid={info.get('wxid')}")
+                            logger.info(f"[API] 获取到V3微信信息: name={info.nick_name}, mobile={info.phone}, wxid={info.wxid}")
                         else:
-                            logger.warning(f"[API] V3微信信息获取失败: errcode={info.get('errcode')}, errmsg={info.get('errmsg')}")
+                            logger.warning(f"[API] V3微信信息获取失败: errcode={info.errcode}, errmsg={info.errmsg}")
             except Exception as e:
                 logger.warning(f"[API] 获取V3微信信息失败: {e}")
                 logger.error(traceback.format_exc())
@@ -889,20 +1112,12 @@ def get_wechat_info():
 # ==================== 启动服务 ====================
 
 if __name__ == '__main__':
-    # 初始化数据库
-    logger.info("[START] 正在初始化数据库...")
-    try:
-        init_database()
-        logger.info("[START] ✅ 数据库初始化完成")
-    except Exception as e:
-        logger.error(f"[START] ❌ 数据库初始化失败: {e}")
-        sys.exit(1)
-    
-    # 启动 Flask 服务
+    # 启动 Flask 服务（不再强制初始化数据库，让用户在登录界面配置）
     logger.info("=" * 60)
     logger.info("🚀 Flask 服务启动成功!")
     logger.info("📍 访问地址: http://127.0.0.1:5000")
     logger.info("📁 日志目录: " + str(LOG_DIR))
+    logger.info("💡 请在登录界面配置数据库路径")
     logger.info("=" * 60)
     
     app.run(host='0.0.0.0', port=5000, debug=True)

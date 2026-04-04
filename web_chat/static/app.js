@@ -105,8 +105,314 @@ const state = {
     contactsHasMore: true, // 联系人是否还有更多
     imageCache: new Map(), // 图片缓存
     wechatInfo: null,      // 微信信息
-    isKeyVisible: false    // Key是否可见
+    isKeyVisible: false,   // Key是否可见
+    isLoggedIn: false      // 是否已登录
 };
+
+// ==================== 分页切换功能 ====================
+function switchPage(pageName) {
+    Logger.info('切换页面: ' + pageName);
+    
+    // 隐藏所有页面
+    document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+    // 显示目标页面
+    const targetPage = document.getElementById('page-' + pageName);
+    if (targetPage) {
+        targetPage.classList.add('active');
+    }
+    
+    // 更新导航栏状态
+    document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
+    const activeTab = document.querySelector('.nav-tab[data-page="' + pageName + '"]');
+    if (activeTab) {
+        activeTab.classList.add('active');
+    }
+    
+    state.currentPage = pageName;
+    
+    // 如果切换到联系人页面，加载联系人数据
+    if (pageName === 'contacts') {
+        loadContactsPage();
+    }
+    
+    // 如果切换到设置页面，加载设置
+    if (pageName === 'settings') {
+        loadSettings();
+    }
+}
+
+// ==================== 自动检测数据库功能 ====================
+async function checkExistingDatabase() {
+    Logger.info('检查是否存在已配置的数据库...');
+    try {
+        // 首先获取配置
+        const configResponse = await fetch(API_BASE + '/api/config');
+        const configResult = await configResponse.json();
+        
+        if (configResult.code === 0 && configResult.data) {
+            const config = configResult.data;
+            const dbPath = config.db_path;
+            
+            // 检查数据库路径是否存在
+            if (dbPath) {
+                // 显示已配置的路径
+                document.getElementById('login-db-path').value = dbPath;
+                document.getElementById('wx-version').value = config.db_version || '3';
+                
+                // 检查数据库是否可连接
+                const checkResponse = await fetch(API_BASE + '/api/db/check');
+                const checkResult = await checkResponse.json();
+                
+                if (checkResult.code === 0 && checkResult.data && checkResult.data.exists) {
+                    Logger.info('检测到有效数据库，启用直接进入按钮', checkResult.data);
+                    // 启用直接进入按钮
+                    const skipBtn = document.getElementById('btn-skip-login');
+                    skipBtn.style.display = 'inline-flex';
+                    skipBtn.disabled = false;
+                    skipBtn.classList.remove('btn-disabled');
+                    updateParseStatus('检测到已有数据库（' + checkResult.data.contacts_count + '个联系人），可直接进入', 100, true);
+                    return true;
+                } else {
+                    Logger.warn('配置的数据库路径无效或不存在', checkResult);
+                    updateParseStatus('未检测到有效数据库，请先解析数据', 0, false, false);
+                }
+            } else {
+                updateParseStatus('未配置数据库路径，请先设置', 0, false, false);
+            }
+        }
+    } catch (error) {
+        Logger.warn('检查数据库配置失败', { error: error.message });
+        updateParseStatus('检查数据库配置失败: ' + error.message, 0, false, true);
+    }
+    
+    // 没有有效数据库，禁用直接进入按钮
+    const skipBtn = document.getElementById('btn-skip-login');
+    skipBtn.style.display = 'none';
+    skipBtn.disabled = true;
+    return false;
+}
+
+// 直接进入主界面（跳过登录）
+async function skipLoginIfDbExists() {
+    Logger.info('用户选择跳过登录，直接进入主界面');
+    
+    const dbPath = document.getElementById('login-db-path').value;
+    const version = document.getElementById('wx-version').value;
+    
+    if (!dbPath) {
+        showError('请先设置解密数据库位置');
+        return;
+    }
+    
+    try {
+        // 更新用户信息显示
+        document.getElementById('nav-username').textContent = '已连接';
+        
+        // 标记为已登录
+        state.isLoggedIn = true;
+        
+        // 显示顶部导航栏
+        document.getElementById('top-nav').classList.add('visible');
+        
+        // 切换到聊天页面
+        switchPage('chat');
+        
+        Logger.info('进入主界面，加载数据...');
+        
+        // 加载数据
+        await testConnection();
+        await Promise.all([
+            loadSessions(),
+            loadContacts()
+        ]);
+        
+    } catch (error) {
+        Logger.error('进入主界面失败', { error: error.message });
+        showError('进入主界面失败: ' + error.message);
+    }
+}
+
+// 选择解密数据库路径（登录界面）
+function selectLoginDbPath() {
+    const path = prompt('请输入解密后数据库存放位置（包含Msg文件夹的路径）:', 
+        document.getElementById('login-db-path').value || 'J:\\留痕（微信备份）\\wxid_xxx\\Msg');
+    if (path) {
+        document.getElementById('login-db-path').value = path;
+        Logger.info('设置解密数据库路径', { path });
+        // 启用解析按钮
+        enableParseButtons(true);
+        updateParseStatus('已设置数据库路径', 50, true);
+    }
+}
+
+// 选择输出目录（登录界面）
+function selectLoginOutputDir() {
+    const path = prompt('请输入解密后的数据库输出目录:', 
+        document.getElementById('login-output-dir').value || 'J:\\留痕（微信备份）');
+    if (path) {
+        document.getElementById('login-output-dir').value = path;
+        Logger.info('设置输出目录', { path });
+    }
+}
+
+// ==================== 设置相关功能 ====================
+async function loadSettings() {
+    Logger.info('加载设置...');
+    try {
+        const response = await fetch(API_BASE + '/api/config');
+        const result = await response.json();
+        
+        if (result.code === 0 && result.data) {
+            const config = result.data;
+            document.getElementById('setting-wechat-path').value = config.wechat_path || '';
+            document.getElementById('setting-db-path').value = config.db_path || '';
+            document.getElementById('setting-db-version').value = config.db_version || '3';
+            Logger.info('设置加载成功', config);
+        }
+    } catch (error) {
+        Logger.error('加载设置失败', { error: error.message });
+    }
+}
+
+async function saveSettings() {
+    Logger.info('保存设置...');
+    const statusEl = document.getElementById('settings-status');
+    
+    const wechatPath = document.getElementById('setting-wechat-path').value;
+    const dbPath = document.getElementById('setting-db-path').value;
+    const dbVersion = document.getElementById('setting-db-version').value;
+    
+    if (!dbPath) {
+        statusEl.className = 'settings-status error';
+        statusEl.textContent = '请选择数据库存放路径';
+        return;
+    }
+    
+    try {
+        const response = await fetch(API_BASE + '/api/config', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                wechat_path: wechatPath,
+                db_path: dbPath,
+                db_version: parseInt(dbVersion)
+            })
+        });
+        
+        const result = await response.json();
+        
+        if (result.code === 0) {
+            statusEl.className = 'settings-status success';
+            statusEl.textContent = '设置已保存';
+            Logger.info('设置保存成功');
+            setTimeout(() => {
+                statusEl.className = 'settings-status';
+            }, 3000);
+        } else {
+            statusEl.className = 'settings-status error';
+            statusEl.textContent = '保存失败: ' + result.msg;
+            Logger.error('设置保存失败', result);
+        }
+    } catch (error) {
+        statusEl.className = 'settings-status error';
+        statusEl.textContent = '保存失败: ' + error.message;
+        Logger.error('设置保存失败', { error: error.message });
+    }
+}
+
+function selectSettingWechatPath() {
+    const path = prompt('请输入微信聊天记录存放位置:', 
+        document.getElementById('setting-wechat-path').value || 'C:\\Users\\YourName\\Documents\\WeChat Files');
+    if (path) {
+        document.getElementById('setting-wechat-path').value = path;
+        Logger.info('设置微信路径', { path });
+    }
+}
+
+function selectSettingDbPath() {
+    const path = prompt('请输入解密后数据库存放位置:', 
+        document.getElementById('setting-db-path').value || 'J:\\留痕（微信备份）');
+    if (path) {
+        document.getElementById('setting-db-path').value = path;
+        Logger.info('设置数据库路径', { path });
+    }
+}
+
+// ==================== 加载联系人页面 ====================
+async function loadContactsPage() {
+    Logger.info('加载联系人页面数据');
+    try {
+        const [contactsResult, statsResult] = await Promise.all([
+            fetch(API_BASE + '/api/contacts?page=1&page_size=100'),
+            fetch(API_BASE + '/api/stats')
+        ]);
+        
+        const contactsData = await contactsResult.json();
+        const statsData = await statsResult.json();
+        
+        // 更新统计信息
+        if (statsData.code === 0) {
+            const stats = statsData.data;
+            document.getElementById('contacts-stats').innerHTML = 
+                '<span>总计: ' + stats.total_contacts + '</span> | ' +
+                '<span>好友: ' + stats.friends + '</span> | ' +
+                '<span>群聊: ' + stats.chatrooms + '</span>';
+        }
+        
+        // 渲染联系人列表
+        if (contactsData.code === 0) {
+            renderContactsPage(contactsData.data);
+        }
+    } catch (error) {
+        Logger.error('加载联系人页面失败', { error: error.message });
+    }
+}
+
+function renderContactsPage(data) {
+    const container = document.getElementById('contact-list-page');
+    if (!container) return;
+    
+    const friends = data.filter(c => !c.is_chatroom);
+    const groups = data.filter(c => c.is_chatroom);
+    
+    let html = '';
+    
+    if (friends.length > 0) {
+        html += '<div class="contact-group">';
+        html += '<div class="contact-group-title">好友 (' + friends.length + ')</div>';
+        friends.forEach(item => {
+            const initial = (item.remark || item.nickname || '?').charAt(0).toUpperCase();
+            html += '<div class="contact-item-page" onclick="selectChatFromContacts(\'' + item.wxid + '\', \'' + escapeHtml(item.remark || item.nickname) + '\', ' + item.is_chatroom + ')">';
+            html += '<img class="avatar" src="' + (item.avatar_url || '') + '" alt="' + initial + '" onerror="this.src=\'data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>' + initial + '</text></svg>\'" >';
+            html += '<div class="contact-info"><div class="contact-name">' + escapeHtml(item.remark || item.nickname || '未知') + '</div>';
+            html += '<div class="contact-wxid">' + escapeHtml(item.wxid) + '</div></div>';
+            html += '</div>';
+        });
+        html += '</div>';
+    }
+    
+    if (groups.length > 0) {
+        html += '<div class="contact-group">';
+        html += '<div class="contact-group-title">群聊 (' + groups.length + ')</div>';
+        groups.forEach(item => {
+            const initial = (item.nickname || '?').charAt(0).toUpperCase();
+            html += '<div class="contact-item-page" onclick="selectChatFromContacts(\'' + item.wxid + '\', \'' + escapeHtml(item.nickname) + '\', ' + item.is_chatroom + ')">';
+            html += '<img class="avatar" src="' + (item.avatar_url || '') + '" alt="' + initial + '" onerror="this.src=\'data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>' + initial + '</text></svg>\'" >';
+            html += '<div class="contact-info"><div class="contact-name">' + escapeHtml(item.nickname || '未知') + '</div>';
+            html += '<div class="contact-wxid">群聊</div></div>';
+            html += '</div>';
+        });
+        html += '</div>';
+    }
+    
+    container.innerHTML = html || '<div class="empty-tip">暂无联系人</div>';
+}
+
+function selectChatFromContacts(wxid, name, isChatroom) {
+    Logger.info('从联系人页面选择: ' + name);
+    switchPage('chat');
+    selectChat(wxid, name, isChatroom);
+}
 
 // API 基础地址
 const API_BASE = '';
@@ -117,26 +423,16 @@ Logger.info('应用初始化开始', { API_BASE, state: JSON.parse(JSON.stringif
 document.addEventListener('DOMContentLoaded', async () => {
     Logger.info('DOM加载完成，开始初始化');
     
+    // 默认显示登录页面
+    switchPage('login');
+    
+    // 检查是否存在已解密的数据库
+    await checkExistingDatabase();
+    
+    // 初始化其他功能（仅在需要时）
     initTabs();
     initSearch();
     initLazyLoad();
-    
-    // 先测试连接
-    Logger.info('测试后端连接...');
-    const testResult = await testConnection();
-    
-    if (testResult && testResult.code === 0) {
-        Logger.info('后端连接成功', testResult.data);
-        // 并行加载数据
-        await Promise.all([
-            loadSessions(),
-            loadContacts()
-        ]);
-        Logger.info('初始数据加载完成');
-    } else {
-        Logger.error('后端连接失败', testResult);
-        showError(testResult ? testResult.msg : '无法连接到服务器');
-    }
 });
 
 // ==================== 测试连接 ====================
@@ -1127,35 +1423,88 @@ function checkReadyToParse() {
 }
 
 /**
- * 解析数据（进入主界面）
+ * 解析数据（解密并进入主界面）
  */
 async function parseData() {
     Logger.info('开始解析数据...');
     
     const wxid = document.getElementById('wx-wxid').value.trim();
-    const path = document.getElementById('wx-path').value.trim();
+    const wxPath = document.getElementById('wx-path').value.trim();
+    const dbPath = document.getElementById('login-db-path').value.trim();
+    const outputDir = document.getElementById('login-output-dir').value.trim();
+    const key = document.getElementById('wx-key').value.trim();
     const version = document.getElementById('wx-version').value;
     
-    if (!wxid || !path) {
-        showError('请填写完整信息');
+    // 使用输出目录（优先使用设置的输出目录，否则使用微信路径）
+    const finalOutputDir = outputDir || wxPath;
+    
+    // 使用数据库路径（优先使用解密数据库路径，否则使用输出目录）
+    const finalDbPath = dbPath || finalOutputDir;
+    
+    if (!wxid || !finalDbPath) {
+        showError('请填写完整信息（wxid 和数据库路径）');
         return;
     }
     
-    updateParseStatus('正在解析数据...', 70);
+    // 如果有 Key，先进行解密
+    if (key && key !== 'None' && key !== '') {
+        if (!finalOutputDir) {
+            showError('请设置输出目录用于存放解密后的数据库');
+            return;
+        }
+        
+        updateParseStatus('正在解密数据库...', 50);
+        
+        try {
+            const decryptResponse = await fetch(API_BASE + '/api/decrypt', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    key: key,
+                    wx_dir: wxPath,
+                    output_dir: finalOutputDir,
+                    version: parseInt(version)
+                })
+            });
+            
+            const decryptResult = await decryptResponse.json();
+            
+            if (decryptResult.code !== 0) {
+                updateParseStatus('解密失败: ' + decryptResult.msg, 0, false, true);
+                showError('解密失败: ' + decryptResult.msg);
+                return;
+            }
+            
+            Logger.info('数据库解密成功', decryptResult.data);
+            updateParseStatus('解密成功，正在加载...', 80);
+            
+        } catch (error) {
+            Logger.error('解密请求失败', { error: error.message });
+            updateParseStatus('解密失败: ' + error.message, 0, false, true);
+            showError('解密失败: ' + error.message);
+            return;
+        }
+    }
+    
+    updateParseStatus('正在加载数据...', 90);
     
     try {
-        // 这里可以调用后端API来设置数据库路径和版本
-        // 暂时直接关闭登录界面进入主界面
-        
         // 更新用户信息显示
         const name = document.getElementById('wx-name').value || wxid;
         document.querySelector('.user-profile .username').textContent = name;
+        document.getElementById('nav-username').textContent = name;
         
-        // 隐藏登录界面，显示主界面
-        document.getElementById('login-modal').style.display = 'none';
+        // 标记为已登录
+        state.isLoggedIn = true;
         
-        updateParseStatus('解析完成', 100, true);
-        Logger.info('数据解析完成，进入主界面');
+        // 显示顶部导航栏
+        document.getElementById('top-nav').classList.add('visible');
+        
+        // 切换到聊天页面
+        switchPage('chat');
+        
+        updateParseStatus('加载完成', 100, true);
+        Logger.info('进入主界面成功');
         
         // 重新加载数据
         await testConnection();
@@ -1165,9 +1514,9 @@ async function parseData() {
         ]);
         
     } catch (error) {
-        Logger.error('解析数据失败', { error: error.message });
-        updateParseStatus('解析失败: ' + error.message, 0, false, true);
-        showError('解析数据失败: ' + error.message);
+        Logger.error('进入主界面失败', { error: error.message });
+        updateParseStatus('加载失败: ' + error.message, 0, false, true);
+        showError('加载失败: ' + error.message);
     }
 }
 

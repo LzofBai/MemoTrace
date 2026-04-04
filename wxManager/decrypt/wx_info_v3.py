@@ -74,27 +74,50 @@ def get_exe_bit(file_path):
         return 64
 
 
-def get_info_without_key(h_process, address, n_size=64):
+def read_ptr(h_process, address, addr_len=8):
+    array = ctypes.create_string_buffer(addr_len)
+    if ReadProcessMemory(h_process, void_p(address), array, addr_len, 0) == 0:
+        return None
+    return int.from_bytes(bytes(array), byteorder='little')
+
+
+def get_info_smart(h_process, address, n_size=64, prefer_wide=True):
     """
-    从指定进程内存地址读取信息并转换为字符串
-    
-    该函数通过调用ReadProcessMemory从指定进程中读取数据，
-    将读取的数据转换为字符串格式并去除空字符和空白字符。
-    
-    Args:
-        h_process: 进程句柄，用于标识要读取的目标进程
-        address: 内存地址，表示要读取数据的起始位置
-        n_size: 要读取的字节数，默认为64字节
-    
-    Returns:
-        str: 成功时返回读取到的字符串内容（已去除空字符和首尾空白），
-             失败或无有效内容时返回"None"
+    智能读取内存字符串，兼容直接存储和指针存储模式，支持UTF-16LE和UTF-8
+    微信3.9.12+版本常使用指针+UTF-16LE存储基本信息
     """
-    array = ctypes.create_string_buffer(n_size)  # 创建一个指定大小的缓冲区来存储读取的数据
-    if ReadProcessMemory(h_process, void_p(address), array, n_size, 0) == 0: return "None"  # 尝试从目标进程内存中读取数据
-    array = bytes(array).split(b"\x00")[0] if b"\x00" in array else bytes(array)  # 分割字节数组以去除空终止符后的部分
-    text = array.decode('utf-8', errors='ignore')  # 将字节数组解码为UTF-8字符串
-    return text.strip() if text.strip() != "" else "None"  # 去除字符串首尾空白并返回结果
+
+    def try_decode(data, wide):
+        if wide:
+            try:
+                text = data.decode('utf-16le', errors='ignore').split('\x00')[0]
+                if text.strip():
+                    return text.strip()
+            except:
+                pass
+        try:
+            text = data.split(b'\x00')[0].decode('utf-8', errors='ignore')
+            if text.strip():
+                return text.strip()
+        except:
+            pass
+        return None
+
+    # 尝试将address当作指针读取
+    ptr = read_ptr(h_process, address)
+    if ptr:
+        buf = ctypes.create_string_buffer(n_size * 2)
+        if ReadProcessMemory(h_process, void_p(ptr), buf, n_size * 2, 0) != 0:
+            result = try_decode(bytes(buf), prefer_wide)
+            if result:
+                return result
+
+    # 直接读取address处数据
+    buf = ctypes.create_string_buffer(n_size * 2)
+    if ReadProcessMemory(h_process, void_p(address), buf, n_size * 2, 0) == 0:
+        return "None"
+    result = try_decode(bytes(buf), prefer_wide)
+    return result if result else "None"
 
 
 def pattern_scan_all(handle, pattern, *, return_multiple=False, find_num=100):
@@ -230,69 +253,52 @@ def get_wx_dir(wxid):
         return ''
 
 
+def read_key_bytes(h_process, address, address_len=8):
+    """
+    从指定内存地址读取密钥字节（先读指针再读密钥）
+    """
+    array = ctypes.create_string_buffer(address_len)
+    if ReadProcessMemory(h_process, void_p(address), array, address_len, 0) == 0:
+        return b""
+    address = int.from_bytes(bytes(array), byteorder='little')
+    key = ctypes.create_string_buffer(32)
+    if ReadProcessMemory(h_process, void_p(address), key, 32, 0) == 0:
+        return b""
+    return bytes(key)
+
+
+def verify_key(key, wx_db_path):
+    """
+    验证密钥是否正确
+    """
+    if not wx_db_path:
+        return True
+    KEY_SIZE = 32
+    DEFAULT_PAGESIZE = 4096
+    DEFAULT_ITER = 64000
+    try:
+        with open(wx_db_path, "rb") as file:
+            blist = file.read(5000)
+    except FileNotFoundError:
+        return True
+    salt = blist[:16]
+    byteKey = hashlib.pbkdf2_hmac("sha1", key, salt, DEFAULT_ITER, KEY_SIZE)
+    first = blist[16:DEFAULT_PAGESIZE]
+
+    mac_salt = bytes([(salt[i] ^ 58) for i in range(16)])
+    mac_key = hashlib.pbkdf2_hmac("sha1", byteKey, mac_salt, 2, KEY_SIZE)
+    hash_mac = hmac.new(mac_key, first[:-32], hashlib.sha1)
+    hash_mac.update(b'\x01\x00\x00\x00')
+
+    if hash_mac.digest() != first[-32:-12]:
+        return False
+    return True
+
+
 def get_key(db_path, addr_len):
     """
     从微信进程中获取数据库解密密钥
-
-    参数:
-        db_path (str): 微信数据库路径
-        addr_len (int): 地址长度（字节）
-
-    返回值:
-        str: 32字节密钥的十六进制字符串表示，如果获取失败则返回空字符串
     """
-    
-    def read_key_bytes(h_process, address, address_len=8):
-        """
-        从指定内存地址读取密钥字节
-        
-        参数:
-            h_process: 进程句柄
-            address: 内存地址
-            address_len: 要读取的地址长度，默认为8字节
-            
-        返回:
-            bytes: 读取到的密钥字节，失败则返回空字符串
-        """
-        array = ctypes.create_string_buffer(address_len)
-        if ReadProcessMemory(h_process, void_p(address), array, address_len, 0) == 0: return ""
-        address = int.from_bytes(array, byteorder='little')  # 逆序转换为int地址（key地址）
-        key = ctypes.create_string_buffer(32)
-        if ReadProcessMemory(h_process, void_p(address), key, 32, 0) == 0: return ""
-        key_bytes = bytes(key)
-        return key_bytes
-
-    def verify_key(key, wx_db_path):
-        """
-        验证密钥是否正确
-        
-        参数:
-            key (bytes): 待验证的密钥
-            wx_db_path (str): 微信数据库路径
-            
-        返回:
-            bool: 密钥是否正确
-        """
-        if not wx_db_path:
-            return True
-        KEY_SIZE = 32
-        DEFAULT_PAGESIZE = 4096
-        DEFAULT_ITER = 64000
-        with open(wx_db_path, "rb") as file:
-            blist = file.read(5000)
-        salt = blist[:16]
-        byteKey = hashlib.pbkdf2_hmac("sha1", key, salt, DEFAULT_ITER, KEY_SIZE)
-        first = blist[16:DEFAULT_PAGESIZE]
-
-        mac_salt = bytes([(salt[i] ^ 58) for i in range(16)])
-        mac_key = hashlib.pbkdf2_hmac("sha1", byteKey, mac_salt, 2, KEY_SIZE)
-        hash_mac = hmac.new(mac_key, first[:-32], hashlib.sha1)
-        hash_mac.update(b'\x01\x00\x00\x00')
-
-        if hash_mac.digest() != first[-32:-12]:
-            return False
-        return True
-
     phone_type1 = "iphone\x00"
     phone_type2 = "android\x00"
     phone_type3 = "ipad\x00"
@@ -307,13 +313,12 @@ def get_key(db_path, addr_len):
     type3_addrs = pm.pattern_scan_module(phone_type3.encode(), module_name, return_multiple=True)
     type_addrs = type1_addrs if len(type1_addrs) >= 2 else type2_addrs if len(type2_addrs) >= 2 else type3_addrs if len(
         type3_addrs) >= 2 else ""
-    # print(type_addrs)
     if type_addrs == "":
         return ""
     for i in type_addrs[::-1]:
         for j in range(i, i - 2000, -addr_len):
             key_bytes = read_key_bytes(pm.process_handle, j, addr_len)
-            if key_bytes == "":
+            if not key_bytes:
                 continue
             if db_path != "" and verify_key(key_bytes, MicroMsg_path):
                 return key_bytes.hex()
@@ -354,20 +359,46 @@ def dump_wechat_info_v3(version_list, pid) -> WeChatInfo:
         wechat_info.errcode = 405
         wechat_info.errmsg = '错误！微信版本不匹配，请手动填写信息。'
         return wechat_info
-    else:
-        name_base_address = wechat_base_address + bias_list[0]
-        account__base_address = wechat_base_address + bias_list[1]
-        mobile_base_address = wechat_base_address + bias_list[2]
 
-        wechat_info.account_name = get_info_without_key(Handle, account__base_address, 32) if bias_list[1] != 0 else "None"
-        wechat_info.phone = get_info_without_key(Handle, mobile_base_address, 64) if bias_list[2] != 0 else "None"
-        wechat_info.nick_name = get_info_without_key(Handle, name_base_address, 64) if bias_list[0] != 0 else "None"
+    name_base_address = wechat_base_address + bias_list[0]
+    account__base_address = wechat_base_address + bias_list[1]
+    mobile_base_address = wechat_base_address + bias_list[2]
+    key_offset = bias_list[4] if len(bias_list) > 4 else 0
+
+    # 3.9.12+ 版本的昵称、账号、手机号常使用UTF-16LE编码，且可能通过指针存储
+    version_tuple = tuple(map(int, wechat_info.version.split('.')))
+    is_new_version = version_tuple >= (3, 9, 12)
+
+    wechat_info.nick_name = get_info_smart(Handle, name_base_address, 64, prefer_wide=is_new_version) if bias_list[0] != 0 else "None"
+    wechat_info.account_name = get_info_smart(Handle, account__base_address, 32, prefer_wide=is_new_version) if bias_list[1] != 0 else "None"
+    wechat_info.phone = get_info_smart(Handle, mobile_base_address, 64, prefer_wide=is_new_version) if bias_list[2] != 0 else "None"
 
     addrLen = get_exe_bit(process.exe()) // 8
 
     wechat_info.wxid = get_info_wxid(Handle)
     wechat_info.wx_dir = get_wx_dir(wechat_info.wxid)
-    wechat_info.key = get_key(wechat_info.wx_dir, addrLen)
+
+    # 优先尝试使用 version_list 中的 key 偏移量读取密钥
+    key = ""
+    MicroMsg_path = os.path.join(wechat_info.wx_dir, "MSG", "MicroMsg.db")
+    if key_offset != 0:
+        key_base_address = wechat_base_address + key_offset
+        # 尝试作为指针读取
+        key_bytes = read_key_bytes(Handle, key_base_address, addrLen)
+        if key_bytes and verify_key(key_bytes, MicroMsg_path):
+            key = key_bytes.hex()
+        else:
+            # 尝试直接读取 32 字节密钥
+            direct_key = ctypes.create_string_buffer(32)
+            if ReadProcessMemory(Handle, void_p(key_base_address), direct_key, 32, 0) != 0:
+                direct_key_bytes = bytes(direct_key)
+                if verify_key(direct_key_bytes, MicroMsg_path):
+                    key = direct_key_bytes.hex()
+
+    if not key:
+        key = get_key(wechat_info.wx_dir, addrLen)
+
+    wechat_info.key = key
     if not wechat_info.key:
         wechat_info.errcode = 404
         wechat_info.errmsg = '请重启微信后重试。'

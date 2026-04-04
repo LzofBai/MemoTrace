@@ -227,37 +227,44 @@ def get_wx_dir(wxid):
         return ''
 
 
-def get_key(db_path, addr_len):
-    def read_key_bytes(h_process, address, address_len=8):
-        array = ctypes.create_string_buffer(address_len)
-        if ReadProcessMemory(h_process, void_p(address), array, address_len, 0) == 0: return "None"
-        address = int.from_bytes(array, byteorder='little')  # 逆序转换为int地址（key地址）
-        key = ctypes.create_string_buffer(32)
-        if ReadProcessMemory(h_process, void_p(address), key, 32, 0) == 0: return "None"
-        key_bytes = bytes(key)
-        return key_bytes
+def read_key_bytes(h_process, address, address_len=8):
+    array = ctypes.create_string_buffer(address_len)
+    if ReadProcessMemory(h_process, void_p(address), array, address_len, 0) == 0:
+        return "None"
+    address = int.from_bytes(array, byteorder='little')
+    key = ctypes.create_string_buffer(32)
+    if ReadProcessMemory(h_process, void_p(address), key, 32, 0) == 0:
+        return "None"
+    key_bytes = bytes(key)
+    return key_bytes
 
-    def verify_key(key, wx_db_path):
-        if not wx_db_path or wx_db_path.lower() == "none":
-            return True
-        KEY_SIZE = 32
-        DEFAULT_PAGESIZE = 4096
-        DEFAULT_ITER = 64000
+
+def verify_key(key, wx_db_path):
+    if not wx_db_path or wx_db_path.lower() == "none":
+        return True
+    KEY_SIZE = 32
+    DEFAULT_PAGESIZE = 4096
+    DEFAULT_ITER = 64000
+    try:
         with open(wx_db_path, "rb") as file:
             blist = file.read(5000)
-        salt = blist[:16]
-        byteKey = hashlib.pbkdf2_hmac("sha1", key, salt, DEFAULT_ITER, KEY_SIZE)
-        first = blist[16:DEFAULT_PAGESIZE]
-
-        mac_salt = bytes([(salt[i] ^ 58) for i in range(16)])
-        mac_key = hashlib.pbkdf2_hmac("sha1", byteKey, mac_salt, 2, KEY_SIZE)
-        hash_mac = hmac.new(mac_key, first[:-32], hashlib.sha1)
-        hash_mac.update(b'\x01\x00\x00\x00')
-
-        if hash_mac.digest() != first[-32:-12]:
-            return False
+    except FileNotFoundError:
         return True
+    salt = blist[:16]
+    byteKey = hashlib.pbkdf2_hmac("sha1", key, salt, DEFAULT_ITER, KEY_SIZE)
+    first = blist[16:DEFAULT_PAGESIZE]
 
+    mac_salt = bytes([(salt[i] ^ 58) for i in range(16)])
+    mac_key = hashlib.pbkdf2_hmac("sha1", byteKey, mac_salt, 2, KEY_SIZE)
+    hash_mac = hmac.new(mac_key, first[:-32], hashlib.sha1)
+    hash_mac.update(b'\x01\x00\x00\x00')
+
+    if hash_mac.digest() != first[-32:-12]:
+        return False
+    return True
+
+
+def get_key(db_path, addr_len):
     phone_type1 = "iphone\x00"
     phone_type2 = "android\x00"
     phone_type3 = "ipad\x00"
@@ -364,7 +371,22 @@ def read_info(version_list):
             tmp_rd['wxid'] = get_info_wxid(Handle)
             tmp_rd['wx_dir'] = get_wx_dir(tmp_rd['wxid']) if tmp_rd['wxid'] != "None" else "None"
             tmp_rd['key'] = "None"
-            tmp_rd['key'] = get_key(tmp_rd['wx_dir'], addrLen)
+
+            # 优先尝试使用 version_list 中的 key 偏移量读取密钥
+            key = "None"
+            if len(bias_list) > 4 and bias_list[4] != 0:
+                key_base_address = wechat_base_address + bias_list[4]
+                # read_key_bytes 从 get_key 中内嵌提取使用
+                key_bytes_local = read_key_bytes(Handle, key_base_address, addrLen)
+                if key_bytes_local != "None":
+                    MicroMsg_path = os.path.join(tmp_rd['wx_dir'], "MSG", "MicroMsg.db")
+                    if verify_key(key_bytes_local, MicroMsg_path):
+                        key = key_bytes_local.hex()
+
+            if key == "None":
+                key = get_key(tmp_rd['wx_dir'], addrLen)
+
+            tmp_rd['key'] = key
             if tmp_rd['key'] == 'None':
                 tmp_rd['errcode'] = 404
                 tmp_rd['errmsg'] = '请重启微信后重试。'
