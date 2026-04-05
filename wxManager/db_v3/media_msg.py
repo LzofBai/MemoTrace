@@ -83,8 +83,7 @@ class MediaMsg(DataBaseBase):
             # system(cmd)
             # 使用subprocess.run()执行命令
             subprocess.run(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        finally:
-            return mp3_path
+        return mp3_path
 
     def get_audio_path(self, reserved0, output_path, filename=''):
         if not filename:

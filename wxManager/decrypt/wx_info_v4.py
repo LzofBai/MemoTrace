@@ -222,8 +222,18 @@ def is_ok(passphrase, buf):
     global finish_flag
     if finish_flag:
         return False
+
+    # 确保缓冲区至少有4096字节（一页）
+    if len(buf) < PAGE_SIZE:
+        return False
+
     # 获取文件开头的 salt
     salt = buf[:SALT_SIZE]
+
+    # 检查 salt 是否合理（不全为0，不全相同）
+    if salt == b'\x00' * SALT_SIZE or len(set(salt)) == 1:
+        return False
+
     # salt 异或 0x3a 得到 mac_salt，用于计算 HMAC
     mac_salt = bytes(x ^ 0x3a for x in salt)
     # 使用 PBKDF2 生成新的密钥
@@ -236,13 +246,28 @@ def is_ok(passphrase, buf):
     # 校验 HMAC
     start = SALT_SIZE
     end = PAGE_SIZE
-    mac = hmac.new(mac_key, buf[start:end - reserve + IV_SIZE], SHA512)
+
+    # 确保缓冲区足够大
+    if len(buf) < end:
+        return False
+
+    mac_data_end = end - reserve + IV_SIZE
+    if mac_data_end <= start or mac_data_end > len(buf):
+        return False
+
+    mac = hmac.new(mac_key, buf[start:mac_data_end], SHA512)
     mac.update(struct.pack('<I', 1))  # page number as 1
     hash_mac = mac.digest()
     # 校验 HMAC 是否一致
     hash_mac_start_offset = end - reserve + IV_SIZE
     hash_mac_end_offset = hash_mac_start_offset + len(hash_mac)
-    if hash_mac == buf[hash_mac_start_offset:hash_mac_end_offset]:
+
+    if hash_mac_end_offset > len(buf):
+        return False
+
+    stored_mac = buf[hash_mac_start_offset:hash_mac_end_offset]
+
+    if hash_mac == stored_mac:
         print(f"[v] found key at 0x{start:x}")
         finish_flag = True
         return True
@@ -273,15 +298,24 @@ def verify_key(key: bytes, buffer: bytes, flag, result):
 
 
 def get_key_(keys, buf):
-    pool = multiprocessing.Pool(processes=multiprocessing.cpu_count() // 2)
-    results = pool.starmap(check_chunk, ((key, buf) for key in keys))
+    print(f"[V4 KEY] 开始验证 {len(keys)} 个密钥候选")
+    if not keys:
+        return None
+
+    # 限制验证的密钥数量，避免过多
+    keys_to_check = keys[:100] if len(keys) > 100 else keys
+
+    pool = multiprocessing.Pool(processes=max(1, multiprocessing.cpu_count() // 2))
+    results = pool.starmap(check_chunk, ((key, buf) for key in keys_to_check))
     pool.close()
     pool.join()
 
     for r in results:
         if r:
-            print("Key found!", r)
+            print(f"[V4 KEY] SUCCESS! 找到有效密钥: {bytes.hex(r)[:16]}...")
             return bytes.hex(r)
+
+    print(f"[V4 KEY] 验证了 {len(keys_to_check)} 个密钥候选，但未找到有效密钥")
     return None
 
 
@@ -293,32 +327,44 @@ def get_key_inner(pid, process_infos):
     :return:
     """
     process_handle = open_process(pid)
+    if not process_handle:
+        print(f"[V4 KEY] ERROR: 无法打开进程 {pid}")
+        return []
+
+    # 更新 yara 规则以支持更多版本的微信
     rules_v4_key = r'''
         rule GetKeyAddrStub
         {
             strings:
                 $a = /.{6}\x00{2}\x00{8}\x20\x00{7}\x2f\x00{7}/
+                $b = /\x00{8}\x20\x00{7}\x2f\x00{7}.{32}/
             condition:
-                all of them
+                any of them
         }
         '''
-    rules = yara.compile(source=rules_v4_key)
+    try:
+        rules = yara.compile(source=rules_v4_key)
+    except Exception as e:
+        print(f"[V4 KEY] ERROR: YARA规则编译失败: {e}")
+        ctypes.windll.kernel32.CloseHandle(process_handle)
+        return []
+
     pre_addresses = []
+    scan_count = 0
+    match_count = 0
+
     for base_address, region_size in process_infos:
         memory = read_process_memory(process_handle, base_address, region_size)
-        # 定义目标数据（如内存或文件内容）
-        target_data = memory  # 二进制数据
         if not memory:
             continue
-        # 加上这些判断条件时灵时不灵
-        # if b'-----BEGIN PUBLIC KEY-----' not in target_data or b'USER_KEYINFO' not in target_data:
-        #     continue
-        # if b'db_storage' not in memory:
-        #     continue
-        # with open(f'key-{base_address}.bin', 'wb') as f:
-        #     f.write(target_data)
+
+        scan_count += 1
+        target_data = memory
+
+        # 尝试匹配密钥地址stub
         matches = rules.match(data=target_data)
         if matches:
+            match_count += 1
             for match in matches:
                 rule_name = match.rule
                 if rule_name == 'GetKeyAddrStub':
@@ -326,69 +372,113 @@ def get_key_inner(pid, process_infos):
                         instance = string.instances[0]
                         offset, content = instance.offset, instance.matched_data
                         addr = read_num(target_data, offset, 8)
-                        pre_addresses.append(addr)
+                        if addr != 0:
+                            pre_addresses.append(addr)
+                            print(f"[V4 KEY] 找到候选地址: 0x{addr:x} (base=0x{base_address:x}, offset={offset})")
+
+    ctypes.windll.kernel32.CloseHandle(process_handle)
+    print(f"[V4 KEY] 扫描完成: 扫描了 {scan_count} 个内存区域，找到 {len(pre_addresses)} 个候选地址")
+
     keys = []
     key_set = set()
     for pre_address in pre_addresses:
-        if True or any([base_address <= pre_address <= base_address + region_size - KEY_SIZE for base_address, region_size in
-                process_infos]):
+        # 检查地址是否在有效的内存区域内
+        in_range = any([base_address <= pre_address <= base_address + region_size - KEY_SIZE
+                       for base_address, region_size in process_infos])
+        if in_range or True:  # 暂时允许所有地址
             key = read_bytes_from_pid(pid, pre_address, 32)
-            if key not in key_set:
-                keys.append(key)
-                key_set.add(key)
+            if key and len(key) == 32 and key not in key_set:
+                # 检查是否是合理的密钥（不全为0，不全相同）
+                if key != b'\x00' * 32 and len(set(key)) > 1:
+                    keys.append(key)
+                    key_set.add(key)
+                    print(f"[V4 KEY] 读取到候选密钥 @ 0x{pre_address:x}: {key.hex()[:16]}...")
+
+    print(f"[V4 KEY] 共收集 {len(keys)} 个唯一密钥候选")
     return keys
 
 
 def get_key(pid, process_handle, buf):
+    print(f"[V4 KEY] 开始获取密钥 for PID={pid}")
     process_infos = get_memory_regions(process_handle)
+    print(f"[V4 KEY] 进程内存区域数量: {len(process_infos)}")
 
     def split_list(lst, n):
         k, m = divmod(len(lst), n)
         return (lst[i * k + min(i, m):(i + 1) * k + min(i + 1, m)] for i in range(n))
 
+    # 如果内存区域太多，使用多进程
+    if len(process_infos) > 100:
+        pool = multiprocessing.Pool(processes=max(1, multiprocessing.cpu_count() // 2))
+        chunk_size = min(len(process_infos), 40)
+        results = pool.starmap(get_key_inner, ((pid, process_info_) for process_info_ in
+                                               split_list(process_infos, chunk_size)))
+        pool.close()
+        pool.join()
+    else:
+        # 内存区域较少时直接扫描
+        results = [get_key_inner(pid, process_infos)]
+
     keys = []
-    pool = multiprocessing.Pool(processes=multiprocessing.cpu_count() // 2)
-    results = pool.starmap(get_key_inner, ((pid, process_info_) for process_info_ in
-                                           split_list(process_infos, min(len(process_infos), 40))))
-    pool.close()
-    pool.join()
     for r in results:
         if r:
             keys += r
+
+    print(f"[V4 KEY] 所有进程扫描完成，共 {len(keys)} 个候选密钥")
+
+    if not keys:
+        print(f"[V4 KEY] WARNING: 未找到任何密钥候选")
+        return None
+
     key = get_key_(keys, buf)
+    print(f"[V4 KEY] 密钥验证结果: {'成功' if key else '失败'}")
     return key
 
 
 def get_wx_dir(process_handle):
+    # 支持多种路径格式（不区分大小写）
+    # 微信4.x可能使用: WeChat Files, Wechat Files, wechat_files, xwechat_files 等
     rules_v4_dir = r'''
     rule GetDataDir {
         strings:
-            $a = /[a-zA-Z]:\\(.{1,100}?\\){0,1}?xwechat_files\\[0-9a-zA-Z_-]{6,24}?\\db_storage\\/
+            $a = /[a-zA-Z]:\\(.{1,100}?\\){0,1}?[Ww][Ee][Cc][Hh][Aa][Tt][_\s][Ff][Ii][Ll][Ee][Ss]\\[0-9a-zA-Z_-]{6,24}?\\[Dd][Bb]_[Ss][Tt][Oo][Rr][Aa][Gg][Ee]\\/
+            $b = /[a-zA-Z]:\\(.{1,100}?\\){0,1}?xwechat_files\\[0-9a-zA-Z_-]{6,24}?\\db_storage\\/
         condition:
-            $a
+            any of them
     }
     '''
     rules = yara.compile(source=rules_v4_dir)
     process_infos = get_memory_regions(process_handle)
     wx_dir_cnt = {}
+    print(f"[V4 DEBUG] 开始扫描内存查找微信数据目录...")
+    scan_count = 0
     for base_address, region_size in process_infos:
         memory = read_process_memory(process_handle, base_address, region_size)
         # 定义目标数据（如内存或文件内容）
         target_data = memory  # 二进制数据
         if not memory:
             continue
-        if b'db_storage' not in memory:
+        # 检查是否包含 db_storage 或 Db_Storage（不区分大小写）
+        target_lower = target_data.lower()
+        if b'db_storage' not in target_lower and b'db storage' not in target_lower:
             continue
+        scan_count += 1
         matches = rules.match(data=target_data)
         if matches:
             # 输出匹配结果
             for match in matches:
                 rule_name = match.rule
-                if rule_name == 'GetDataDir':
-                    for string in match.strings:
-                        content = string.instances[0].matched_data
-                        wx_dir_cnt[content] = wx_dir_cnt.get(content, 0) + 1
-    return max(wx_dir_cnt, key=wx_dir_cnt.get).decode('utf-8') if wx_dir_cnt else ''
+                print(f"[V4 DEBUG] 规则匹配: {rule_name}")
+                for string in match.strings:
+                    content = string.instances[0].matched_data
+                    print(f"[V4 DEBUG] 找到路径: {content}")
+                    wx_dir_cnt[content] = wx_dir_cnt.get(content, 0) + 1
+    print(f"[V4 DEBUG] 扫描了 {scan_count} 个内存区域，找到 {len(wx_dir_cnt)} 个候选路径")
+    if wx_dir_cnt:
+        best_match = max(wx_dir_cnt, key=wx_dir_cnt.get)
+        print(f"[V4 DEBUG] 选择最佳路径: {best_match}")
+        return best_match.decode('utf-8')
+    return ''
 
 
 def get_nickname(pid):
@@ -481,38 +571,119 @@ def dump_wechat_info_v4(pid) -> WeChatInfo | None:
     wechat_info = WeChatInfo()
     wechat_info.pid = pid
     wechat_info.version = get_version(pid)
+    print(f"[V4] 微信版本: {wechat_info.version}")
+
     process_handle = open_process(pid)
     if not process_handle:
-        print(f"无法打开进程 {pid}")
+        print(f"[V4 ERROR] 无法打开进程 {pid}")
+        wechat_info.errmsg = f"无法打开进程 {pid}"
         return wechat_info
+
     queue = multiprocessing.Queue()
     process = multiprocessing.Process(target=worker, args=(pid, queue))
-
     process.start()
 
     wechat_info.wx_dir = get_wx_dir(process_handle)
-    # print(wx_dir_cnt)
+    print(f"[V4] 微信数据目录: {wechat_info.wx_dir}")
+
     if not wechat_info.wx_dir:
+        print(f"[V4 ERROR] 无法获取微信数据目录")
+        wechat_info.errmsg = "无法获取微信数据目录，请确保微信已登录"
+        ctypes.windll.kernel32.CloseHandle(process_handle)
+        process.terminate()
         return wechat_info
-    db_file_path = os.path.join(wechat_info.wx_dir, 'favorite', 'favorite_fts.db')
-    if not os.path.exists(db_file_path):
-        db_file_path = os.path.join(wechat_info.wx_dir, 'head_image', 'head_image.db')
-    with open(db_file_path, 'rb') as f:
-        buf = f.read()
+
+    # 尝试查找数据库文件用于密钥验证
+    # 搜索所有可能的加密数据库文件
+    possible_db_files = []
+
+    # 首先尝试已知的固定路径
+    fixed_paths = [
+        os.path.join(wechat_info.wx_dir, 'favorite', 'favorite_fts.db'),
+        os.path.join(wechat_info.wx_dir, 'head_image', 'head_image.db'),
+        os.path.join(wechat_info.wx_dir, 'msg', 'message.db'),
+        os.path.join(wechat_info.wx_dir, 'microMsg.db'),
+        os.path.join(wechat_info.wx_dir, 'session.db'),
+    ]
+
+    for path in fixed_paths:
+        if os.path.exists(path):
+            possible_db_files.append(path)
+
+    # 如果没有找到，遍历目录查找 .db 文件
+    if not possible_db_files:
+        print(f"[V4] 遍历目录查找数据库文件...")
+        for root, dirs, files in os.walk(wechat_info.wx_dir):
+            for file in files:
+                if file.endswith('.db'):
+                    possible_db_files.append(os.path.join(root, file))
+            # 限制遍历深度，避免太慢
+            if root.count(os.sep) > wechat_info.wx_dir.count(os.sep) + 2:
+                break
+
+    # 选择一个合适的数据库文件（优先选择较小的系统数据库）
+    db_file_path = None
+    buf = None
+
+    if possible_db_files:
+        # 按文件大小排序，优先选择较小的文件（系统数据库通常较小）
+        possible_db_files.sort(key=lambda x: os.path.getsize(x) if os.path.exists(x) else float('inf'))
+        print(f"[V4] 找到 {len(possible_db_files)} 个数据库文件")
+
+        # 尝试每个数据库文件，直到找到一个可以读取的
+        for path in possible_db_files[:5]:  # 最多尝试前5个
+            try:
+                with open(path, 'rb') as f:
+                    buf = f.read(4096)  # 只读取第一页
+                if len(buf) >= 4096:
+                    db_file_path = path
+                    print(f"[V4] 使用数据库文件: {db_file_path} ({os.path.getsize(db_file_path)} bytes)")
+                    break
+            except Exception as e:
+                print(f"[V4] 无法读取 {path}: {e}")
+                continue
+
+    if not db_file_path or not buf:
+        print(f"[V4 ERROR] 未找到可用的数据库文件用于密钥验证")
+        wechat_info.errmsg = "未找到可用的数据库文件"
+        wechat_info.errcode = 404
+        ctypes.windll.kernel32.CloseHandle(process_handle)
+        process.terminate()
+        return wechat_info
+
+    print(f"[V4] 开始扫描密钥...")
     wechat_info.key = get_key(pid, process_handle, buf)
+    print(f"[V4] 密钥扫描结果: {'成功' if wechat_info.key else '失败'}")
+
     ctypes.windll.kernel32.CloseHandle(process_handle)
-    wechat_info.wxid = '_'.join(wechat_info.wx_dir.split('\\')[-3].split('_')[0:-1])
-    wechat_info.wx_dir = '\\'.join(wechat_info.wx_dir.split('\\')[:-2])
-    process.join()  # 等待子进程完成
+
+    # 提取 wxid 和简化 wx_dir
+    try:
+        wechat_info.wxid = '_'.join(wechat_info.wx_dir.split('\\')[-3].split('_')[0:-1])
+        wechat_info.wx_dir = '\\'.join(wechat_info.wx_dir.split('\\')[:-2])
+    except Exception as e:
+        print(f"[V4 ERROR] 解析 wxid 失败: {e}")
+
+    process.join(timeout=5)  # 等待子进程完成，最多5秒
+    if process.is_alive():
+        print(f"[V4 WARNING] 获取昵称进程超时")
+        process.terminate()
+
     if not queue.empty():
         nickname_info = queue.get()
         wechat_info.nick_name = nickname_info.get('nick_name', '')
         wechat_info.phone = nickname_info.get('phone', '')
         wechat_info.account_name = nickname_info.get('account_name', '')
+        print(f"[V4] 用户信息: 昵称={wechat_info.nick_name}, 手机={wechat_info.phone}")
+
     if not wechat_info.key:
         wechat_info.errcode = 404
+        wechat_info.errmsg = "无法获取密钥，请重新登录微信"
     else:
         wechat_info.errcode = 200
+        wechat_info.errmsg = "成功"
+
+    print(f"[V4] 最终结果: errcode={wechat_info.errcode}, errmsg={wechat_info.errmsg}")
     return wechat_info
 
 

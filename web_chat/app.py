@@ -46,14 +46,28 @@ try:
     from flask import Flask, jsonify, request, send_from_directory, send_file, Response
     from flask_cors import CORS
     from wxManager import DatabaseConnection
-    from wxManager.decrypt.decrypt_dat import decode_dat, is_v4_image, get_aes_key
     from wxManager import Me
-    from wxManager.decrypt import decrypt_v3, decrypt_v4
-    logger.info("✅ 所有模块导入成功")
+    logger.info("✅ 核心模块导入成功")
 except Exception as e:
-    logger.error(f"❌ 模块导入失败: {e}")
+    logger.error(f"❌ 核心模块导入失败: {e}")
     logger.error(traceback.format_exc())
     raise
+
+# 尝试导入微信解密相关模块（可选，需要 yara-python）
+try:
+    from wxManager.decrypt.decrypt_dat import decode_dat, is_v4_image, get_aes_key
+    from wxManager.decrypt import decrypt_v3, decrypt_v4
+    DECRYPT_MODULES_AVAILABLE = True
+    logger.info("✅ 微信解密模块导入成功")
+except ImportError as e:
+    DECRYPT_MODULES_AVAILABLE = False
+    decode_dat = None
+    is_v4_image = None
+    get_aes_key = None
+    decrypt_v3 = None
+    decrypt_v4 = None
+    logger.warning(f"⚠️ 微信解密模块导入失败（可能需要安装 yara-python）: {e}")
+    logger.warning("提示: 如需使用微信 V4 自动检测功能，请运行: pip install yara-python")
 
 # 尝试导入微信信息获取模块
 try:
@@ -245,9 +259,9 @@ def decrypt_image(image_path):
         logger.debug(f"[IMAGE] 文件头: {header[:16].hex()}")
         
         # 检查是否是 V4 格式
-        if is_v4_image(header):
+        if is_v4_image and is_v4_image(header):
             logger.info("[IMAGE] 检测到V4格式图片，使用AES解密")
-            aes_key = get_aes_key(header)
+            aes_key = get_aes_key(header) if get_aes_key else None
             if aes_key:
                 logger.info(f"[IMAGE] AES密钥: {aes_key.hex()}")
                 from Crypto.Cipher import AES
@@ -1045,6 +1059,7 @@ def get_wechat_info():
                 logger.error(traceback.format_exc())
         
         # 尝试获取V4版本微信信息
+        v4_errors = []
         if get_info_v4:
             try:
                 logger.info("[API] 尝试获取V4微信信息...")
@@ -1079,10 +1094,14 @@ def get_wechat_info():
                             })
                             logger.info(f"[API] 获取到V4微信信息: name={info_dict['nick_name']}, mobile={info_dict['phone']}, wxid={info_dict['wxid']}")
                         else:
-                            logger.warning(f"[API] V4微信信息获取失败: errcode={info_dict['errcode']}, errmsg={info_dict['errmsg']}")
+                            error_msg = f"V4微信信息获取失败: errcode={info_dict['errcode']}, errmsg={info_dict['errmsg']}, pid={info_dict['pid']}, version={info_dict['version']}, wx_dir={info_dict['wx_dir']}"
+                            logger.warning(f"[API] {error_msg}")
+                            v4_errors.append(error_msg)
             except Exception as e:
-                logger.warning(f"[API] 获取V4微信信息失败: {e}")
+                error_msg = f"获取V4微信信息异常: {str(e)}"
+                logger.warning(f"[API] {error_msg}")
                 logger.error(traceback.format_exc())
+                v4_errors.append(error_msg)
         
         if result:
             logger.info(f"[API] /api/wechat/info ✅ 成功获取 {len(result)} 个微信账号信息")
@@ -1092,11 +1111,15 @@ def get_wechat_info():
                 'data': result
             })
         else:
-            logger.warning("[API] /api/wechat/info ⚠️ 未找到登录的微信或获取失败")
+            # 收集所有错误信息
+            all_errors = v4_errors
+            error_detail = '; '.join(all_errors) if all_errors else '未找到登录的微信进程'
+            logger.warning(f"[API] /api/wechat/info ⚠️ {error_detail}")
             return jsonify({
                 'code': 404,
-                'msg': '未找到登录的微信，请确保微信已登录并运行',
-                'data': []
+                'msg': f'未找到登录的微信，请确保微信已登录并运行。详情: {error_detail}',
+                'data': [],
+                'errors': all_errors
             })
     
     except Exception as e:

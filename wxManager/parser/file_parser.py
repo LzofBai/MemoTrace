@@ -53,8 +53,7 @@ def parse_video(xml_content):
         }
     except:
         logger.error(f'视频解析失败\n{xml_content}')
-    finally:
-        return result
+    return result
 
 
 if __name__ == '__main__':

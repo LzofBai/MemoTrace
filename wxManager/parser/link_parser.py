@@ -52,8 +52,7 @@ def parser_link(xml_content):
         }
     except:
         logger.error(traceback.format_exc())
-    finally:
-        return result
+    return result
 
 
 def parser_voip(xml_content):
@@ -84,8 +83,7 @@ def parser_voip(xml_content):
         }
     except:
         logger.error(traceback.format_exc())
-    finally:
-        return result
+    return result
 
 
 def parser_applet(xml_content):
@@ -125,8 +123,7 @@ def parser_applet(xml_content):
         }
     except:
         logger.error(traceback.format_exc())
-    finally:
-        return result
+    return result
 
 
 def parser_music(xml_content):
@@ -203,8 +200,7 @@ def parser_business(xml_content):
                 'text': '【名片解析错误】'
             }
         )
-    finally:
-        return result
+    return result
 
 
 def replace_entity(match):
@@ -604,8 +600,7 @@ def parser_wechat_video(xml_content):
         }
     except:
         logger.error(traceback.format_exc())
-    finally:
-        return result
+    return result
 
 
 def parser_position(xml_content):
@@ -633,8 +628,7 @@ def parser_position(xml_content):
                 'text': '【位置分享解析错误】'
             }
         )
-    finally:
-        return result
+    return result
 
 
 def parser_reply(xml_content):
@@ -795,8 +789,7 @@ def parser_transfer(xml_content):
                 'text': '【位置分享解析错误】'
             }
         )
-    finally:
-        return result
+    return result
 
 
 def parser_red_envelop(xml_content):
@@ -820,8 +813,7 @@ def parser_red_envelop(xml_content):
                 'text': '【位置分享解析错误】'
             }
         )
-    finally:
-        return result
+    return result
 
 
 def parser_file(xml_content):
@@ -849,8 +841,7 @@ def parser_file(xml_content):
         }
     except:
         logger.error(f'文件解析错误\n{traceback.format_exc()}\n{xml_content}')
-    finally:
-        return result
+    return result
 
 
 def parser_favorite_note(xml_content):
@@ -874,8 +865,7 @@ def parser_favorite_note(xml_content):
         }
     except:
         logger.error(f'笔记解析错误\n{traceback.format_exc()}')
-    finally:
-        return result
+    return result
 
 
 def parser_pat(xml_content):
@@ -898,8 +888,7 @@ def parser_pat(xml_content):
         }
     except:
         logger.error(f'拍一拍解析错误\n{traceback.format_exc()}\n{xml_content}')
-    finally:
-        return result
+    return result
 
 
 if __name__ == '__main__':
@@ -1121,8 +1110,7 @@ def wx_pdd_data(bytesExtra, compress_content_):
     except:
         logger.error(traceback.format_exc())
         logger.error(dic_data)
-    finally:
-        return {
+    return {
             'title': title,
             'display_name': display_name,
             'product': product,

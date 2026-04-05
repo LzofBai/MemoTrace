@@ -31,8 +31,7 @@ def parser_audio(xml_content):
             result = {
                 'audio_length': voice_length
             }
-    finally:
-        return result
+    return result
 
 
 if __name__ == '__main__':
