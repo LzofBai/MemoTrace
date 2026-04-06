@@ -18,19 +18,23 @@ class Misc(DataBaseBase):
     def get_avatar_buffer(self, username):
         if not self.open_flag:
             return None
-        sql = '''
-            select smallHeadBuf
-            from ContactHeadImg1
-            where usrName=?;
-        '''
-        cursor = self.DB.cursor()
-        cursor.execute(sql, [username])
-        result = cursor.fetchall()
-        cursor.close()
-        self.DB.commit()
-        if result:
-            return result[0][0]
-        else:
+        try:
+            sql = '''
+                select smallHeadBuf
+                from ContactHeadImg1
+                where usrName=?;
+            '''
+            cursor = self.DB.cursor()
+            cursor.execute(sql, [username])
+            result = cursor.fetchall()
+            cursor.close()
+            self.DB.commit()
+            if result:
+                return result[0][0]
+            else:
+                return b''
+        except sqlite3.OperationalError:
+            logger.error(f'数据库错误:\n{traceback.format_exc()}')
             return b''
 
     def set_avatar_buffer(self, username, img_path):

@@ -92,20 +92,69 @@ def decode_wrapper(tasks):
 
 
 def decrypt_db_files(key, src_dir: str, dest_dir: str):
+    """
+    批量解密微信 V3 版本的加密数据库文件
+
+    该函数遍历源目录下所有的 .db 文件，并使用多进程并行解密。
+    解密后的文件会保持原有的子目录结构。
+
+    微信数据库加密原理（V3版本）：
+        - 采用 256 位 AES-CBC 加密算法
+        - 数据库默认页大小为 4096 字节（4KB），每一页单独加解密
+        - 每个页面末尾保存 16 字节的初始化向量(IV)和 20 字节的 HMAC-SHA1 消息认证码
+        - 文件开头 16 字节为随机盐值，用于密钥派生
+        - 解密密钥由主密钥和盐值通过 PKCS5_PBKF2_HMAC1 算法迭代 64000 次计算得到
+
+    Args:
+        key (str): 解密密钥，必须为 64 位十六进制字符串（32 字节）。
+                   该密钥通常通过 get_wx_info 等函数从微信进程中获取。
+                   示例: "a1b2c3d4e5f6..."（共 64 个字符）
+
+        src_dir (str): 源文件夹路径，包含待解密的微信加密数据库文件。
+                       函数会递归遍历该目录下所有子文件夹中的 .db 文件。
+                       常见路径: 微信数据目录下的 Msg、MicroMsg.db 等数据库文件
+
+        dest_dir (str): 目标文件夹路径，用于存放解密后的数据库文件。
+                        如果目录不存在，函数会自动创建。
+                        解密后的文件将保持与源目录相同的子目录结构。
+
+    Returns:
+        None: 该函数无返回值，解密结果会打印到控制台。
+
+    Raises:
+        无显式异常抛出，但解密过程中的错误会通过 decrypt_db_file_v3 函数返回错误信息。
+
+    Example:
+        >>> # 解密微信数据库文件
+        >>> key = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        >>> src = "C:/Users/xxx/Documents/WeChat Files/wxid_xxx/Msg"
+        >>> dest = "D:/decrypted_db"
+        >>> decrypt_db_files(key, src, dest)
+
+    Note:
+        - 使用 ProcessPoolExecutor 进行多进程并行解密，最大并发数为 16
+        - 解密单个文件的具体实现参见 decrypt_db_file_v3 函数
+        - 仅处理 .db 扩展名的文件，其他文件将被忽略
+    """
+    # 检查源文件夹是否存在
     if not os.path.exists(src_dir):
         print(f"源文件夹 {src_dir} 不存在")
         return
 
+    # 如果目标文件夹不存在，则创建它
     if not os.path.exists(dest_dir):
-        os.makedirs(dest_dir)  # 如果目标文件夹不存在，创建它
+        os.makedirs(dest_dir)
+
+    # 收集所有解密任务
     decrypt_tasks = []
     for root, dirs, files in os.walk(src_dir):
         for file in files:
+            # 仅处理 .db 扩展名的数据库文件
             if file.endswith(".db"):
-                # 构造源文件和目标文件的完整路径
+                # 构造源文件的完整路径
                 src_file_path = os.path.join(root, file)
 
-                # 计算目标路径，保持子文件夹结构
+                # 计算目标路径，保持原有的子文件夹结构
                 relative_path = os.path.relpath(root, src_dir)
                 dest_sub_dir = os.path.join(dest_dir, relative_path)
                 dest_file_path = os.path.join(dest_sub_dir, file)
@@ -113,8 +162,11 @@ def decrypt_db_files(key, src_dir: str, dest_dir: str):
                 # 确保目标子文件夹存在
                 if not os.path.exists(dest_sub_dir):
                     os.makedirs(dest_sub_dir)
+
                 print(dest_file_path)
+                # 将解密任务参数打包添加到任务列表
                 decrypt_tasks.append((key, src_file_path, dest_file_path))
-                # decrypt_db_file_v3(key, src_file_path, dest_file_path)
+
+    # 使用多进程并行执行解密任务，最大并发数为 16
     with ProcessPoolExecutor(max_workers=16) as executor:
-        results = list(executor.map(decode_wrapper, decrypt_tasks))  # 使用顶层定义的函数
+        results = list(executor.map(decode_wrapper, decrypt_tasks))

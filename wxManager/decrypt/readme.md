@@ -58,7 +58,7 @@
 
 ### 8. [version_list.json](file:///Users/xuxiaoxiao/Documents/GitHub/MemoTrace/MemoTrace/wxManager/decrypt/version_list.json#L1-L1171)
 
-存储不同微信版本对应的内存偏移地址列表，用于快速定位内存中特定数据的位置。
+存储不同微信版本对应的内存偏移地址偏移量列表，用于快速定位内存中昵称和电话号码，注： 昵称/手机号解析失败（用于显示微信用户信息，不影响数据库解密）。
 
 ### 9. [wx_info_v3.py]
 这个文件主要用于从微信 v3.x 版本的进程中提取用户账户信息，包括微信ID、昵称、账号名称、手机号和数据库解密密钥等。

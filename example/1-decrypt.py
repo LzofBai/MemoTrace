@@ -14,10 +14,15 @@ import os
 import sys
 from pathlib import Path
 
+#----------------------------------------------------------------
+# 此操作只为能导入wxManager模块，若有其他方法可删除
 # 添加项目根目录到Python路径，确保可以导入wxManager模块
 current_file_path = Path(__file__).resolve()
 project_root = current_file_path.parent.parent  # 回退到MemoTrace目录
 sys.path.insert(0, str(project_root))
+# 此操作只为能导入wxManager模块，实际使用时请删除或注释掉
+#----------------------------------------------------------------
+
 
 from multiprocessing import freeze_support
 
@@ -32,6 +37,9 @@ def dump_v3():
     解析微信3.x版本的数据库
     """
     # 使用绝对路径来确保version_list.json文件能被找到
+    #version_list.json存储不同微信版本对应的内存偏移地址偏移量列表，用于快速定位内存中昵称和电话号码，
+    # 注： 昵称/手机号解析失败（用于显示微信用户信息，不影响数据库解密）。
+    # 解密成功的关键在于get_key() 函数，它通过扫描 "iphone\0"、"android\0" 等模式来定位密钥。
     version_list_path = os.path.join(project_root, 'wxManager', 'decrypt', 'version_list.json')
     with open(version_list_path, "r", encoding="utf-8") as f:
         version_list = json.loads(f.read())
