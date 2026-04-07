@@ -126,9 +126,17 @@ def get_decode_code_v4(wx_dir):
     :param wx_dir:
     :return:
     """
+    if not wx_dir:
+        raise ValueError(f'微信路径为空，请检查: {wx_dir}')
+    if not os.path.isdir(wx_dir):
+        raise ValueError(f'微信路径不是一个有效目录: {wx_dir}')
+    
     cache_dir = os.path.join(wx_dir, 'cache')
-    if not os.path.isdir(wx_dir) or not os.path.exists(cache_dir):
-        raise ValueError(f'微信路径输入错误，请检查：{wx_dir}')
+    if not os.path.exists(cache_dir):
+        # 尝试其他或夙的路径
+        print(f"[WARNING] cache 目录不存在: {cache_dir}")
+    elif not os.path.isdir(cache_dir):
+        raise ValueError(f'微信路径中cache不是一个目录: {cache_dir}')
 
     def find_xor_key(dir0):
         ok_flag = False

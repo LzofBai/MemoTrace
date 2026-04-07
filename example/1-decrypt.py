@@ -74,11 +74,23 @@ def dump_v4():
     r_4 = get_info_v4()  # 微信4.0
     for wx_info in r_4:
         print(wx_info)
+        # 检查必要的信息是否获取成功
+        if not wx_info.wx_dir:
+            print('error! 无法获取微信数据目录，请确保微信已登录')
+            continue
+        if not wx_info.wxid:
+            print('error! 无法获取微信ID，请确保微信已登录')
+            continue
         me = Me()
         me.wx_dir = wx_info.wx_dir
         me.wxid = wx_info.wxid
         me.name = wx_info.nick_name
-        me.xor_key = get_decode_code_v4(wx_info.wx_dir)
+        # 尝试获取异或密钥，如果失败则跳过该账号
+        try:
+            me.xor_key = get_decode_code_v4(wx_info.wx_dir)
+        except ValueError as e:
+            print(f'error! 获取异或密钥失败: {e}')
+            continue
         info_data = me.to_json()
         output_dir = wx_info.wxid  # 数据库输出文件夹
         key = wx_info.key
@@ -86,6 +98,7 @@ def dump_v4():
             print('error! 未找到key，请重启微信后再试')
             continue
         wx_dir = wx_info.wx_dir
+        # 解密数据库，此程序的核心功能，核心参数（KEY:数据库加密密钥，src_dir:微信数据目录，dest_dir:导出目录）
         decrypt_v4.decrypt_db_files(key, src_dir=wx_dir, dest_dir=output_dir)
         # 导出的数据库在 output_dir/db_storage 文件夹下，后面会用到
         with open(os.path.join(output_dir, 'db_storage', 'info.json'), 'w', encoding='utf-8') as f:
@@ -93,9 +106,42 @@ def dump_v4():
         # 修复：打印正确的路径信息，对于v4版本是db_storage而非Msg
         print(f'数据库解析成功，在{os.path.join(output_dir, "db_storage")}路径下')
 
+def test():
+    """测试手动指定密钥的解密方式"""
+    # 微信4.0数据库密钥（从内存中提取）
+    key = r"c9eaed112cbb4dd896a5dd7314186a24598951f2efff4afe812fb7556f4fc4ce"
+    # 微信数据目录
+    wx_dir = r"G:\微信\xwechat_files\wxid_5e3hd0zrse6w22_c8c9"
+    # 输出目录
+    output_dir = r"C:\Users\16267\Desktop\a"
+    
+    # 创建Me对象并设置信息
+    me = Me()
+    me.wxid = "wxid_5e3hd0zrse6w22_c8c9"
+    me.wx_dir = wx_dir
+    me.name = "啊伟"
+    
+    # 根据 find_xor_key.py 的查找结果，设置图片解密密钥
+    # 请将下面的 0x00 替换为你的实际xor_key值
+    me.xor_key = 0x13  # ⬅️ 修改这一行：例如 me.xor_key = 0x42
+    
+    print(f"[INFO] 正在解密...")
+    print(f"  - 微信目录: {wx_dir}")
+    print(f"  - 输出目录: {output_dir}")
+    print(f"  - 图片xor_key: 0x{me.xor_key:02x}")
+    
+    try:
+        decrypt_v4.decrypt_db_files(key, src_dir=wx_dir, dest_dir=output_dir)
+        print(f"[SUCCESS] 解密完成，数据已保存到: {output_dir}")
+    except Exception as e:
+        print(f"[ERROR] 解密失败: {e}")
+        import traceback
+        traceback.print_exc()
+
 
 if __name__ == '__main__':
     freeze_support()  # 使用多进程必须
     # 根据自己的微信版本选择使用对应的函数
-    dump_v3()  # 微信3.x
-    # dump_v4() # 微信4.0
+    #dump_v3()  # 微信3.x
+    dump_v4() # 微信4.0
+    # test()
